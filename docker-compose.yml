@@ -1,0 +1,72 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+    networks:
+      - tracker-net
+
+  db:
+    image: pgvector/pgvector:pg16
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-job_tracker}
+      POSTGRES_USER: ${POSTGRES_USER:-tracker_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tracker_secret_password_change_me}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - tracker-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tracker_admin} -d ${POSTGRES_DB:-job_tracker}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: ./web
+    restart: always
+    ports:
+      - "8501:8501"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-tracker_admin}:${POSTGRES_PASSWORD:-tracker_secret_password_change_me}@db:5432/${POSTGRES_DB:-job_tracker}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    networks:
+      - tracker-net
+    depends_on:
+      db:
+        condition: service_healthy
+
+  worker:
+    build: ./worker
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-tracker_admin}:${POSTGRES_PASSWORD:-tracker_secret_password_change_me}@db:5432/${POSTGRES_DB:-job_tracker}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GMAIL_CLIENT_ID=${GMAIL_CLIENT_ID}
+      - GMAIL_CLIENT_SECRET=${GMAIL_CLIENT_SECRET}
+      - GMAIL_REFRESH_TOKEN=${GMAIL_REFRESH_TOKEN}
+    networks:
+      - tracker-net
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  tracker-net:
+    driver: bridge

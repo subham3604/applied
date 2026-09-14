@@ -1,0 +1,57 @@
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+credentials.json
+*credentials*.json
+client_secret*.json
+token.json
+token.pickle
+
+# Python & Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+ENV/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs & Databases
+*.log
+*.sqlite3
+*.db
+
+# Caddy & Local Docker mounts
+caddy_data/
+caddy_config/
+postgres_data/
+
+# OS / IDE
+.DS_Store
+._*
+.idea/
+.vscode/
+*.swp
+*.swo
