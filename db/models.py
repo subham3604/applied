@@ -34,6 +34,7 @@ class ApplicationStatus(str, enum.Enum):
 class EventSource(str, enum.Enum):
     MANUAL_DROP = "MANUAL_DROP"
     GMAIL_WORKER = "GMAIL_WORKER"
+    MANUAL_OVERRIDE = "MANUAL_OVERRIDE"
 
 
 class VaultCategory(str, enum.Enum):
@@ -117,7 +118,8 @@ class PipelineEvent(Base):
         nullable=False,
     )
     raw_payload = Column(Text, nullable=False)
-    llm_confidence = Column(Numeric(4, 3), nullable=True)
+    resolution_note = Column(Text, nullable=True)
+    llm_confidence = Column(String(20), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
 
     # Relationships
@@ -153,3 +155,11 @@ class MasterExperienceVault(Base):
             postgresql_ops={"embedding": "vector_cosine_ops"}
         ),
     )
+
+
+class WorkerConfig(Base):
+    __tablename__ = "worker_config"
+
+    key = Column(String(100), primary_key=True)
+    value = Column(Text, nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)

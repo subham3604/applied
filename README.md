@@ -6,6 +6,7 @@ An event-driven, agentic career pipeline system featuring automated ATS email tr
 
 - 📘 **[System Design Document](./docs/SYSTEM_DESIGN.md)**: Full architecture specification, component interactions, PostgreSQL DDL schema, LangGraph state machine flow, CUJs, and DigitalOcean deployment guide.
 - ⏱️ **[3-Week Build Timeline & Task Flow](./docs/BUILD_TIMELINE.md)**: Day-by-day implementation roadmap (Days 1–21), daily deliverables, acceptance criteria, scope protection guidelines, and risk mitigations.
+- 🧪 **[Automated Testing Strategy](./docs/TESTING_STRATEGY.md)**: Architectural test matrix, unit test specifications, anti-hallucination guard assertions, and evaluation harness guide.
 - 🖼️ **[Architecture & Diagram Assets](./docs/assets/)**: High-resolution diagrams for system topology, LangGraph state machine, database schema, deployment, and project Gantt chart.
 
 ## Quick Architecture Summary
