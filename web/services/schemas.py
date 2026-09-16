@@ -108,3 +108,16 @@ class JobApplication(BaseModel):
             if not v:
                 raise ValueError("Field cannot be empty or only whitespace")
         return v
+
+
+class ExtractionResult(BaseModel):
+    """
+    Structured outcome of the extraction pipeline with circuit breaker status.
+    Guarantees callers receive a typed result without unhandled exceptions.
+    """
+    success: bool
+    data: Optional[JobApplication] = None
+    error: Optional[str] = None
+    retry_count: int = 0
+    circuit_broken: bool = False
+

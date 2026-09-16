@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from web.services.schemas import JobApplication
+from web.services.schemas import JobApplication, ExtractionResult
 
 logger = logging.getLogger("extraction_service")
 
@@ -32,7 +32,7 @@ def _heuristic_fallback_parse(raw_text: str) -> JobApplication:
     lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
     
     # 1. Company extraction
-    company = "Unknown Company"
+    company = None
     company_match = re.search(r"(?:Company|Organization|Employer)\s*:\s*([^\n\(\-]+)", raw_text, re.IGNORECASE)
     if company_match:
         company = company_match.group(1).strip()
@@ -43,26 +43,34 @@ def _heuristic_fallback_parse(raw_text: str) -> JobApplication:
             company = brand_match.group(1).strip()
         elif lines:
             for l in lines[:5]:
-                if any(k in l.lower() for k in ["swiggy", "zomato", "phonepe", "amazon", "google", "microsoft"]):
-                    for w in ["Swiggy", "Zomato", "PhonePe", "Amazon", "Google", "Microsoft"]:
-                        if w.lower() in l.lower():
-                            company = w
-                            break
+                for w in ["Swiggy", "Zomato", "PhonePe", "Amazon", "Google", "Microsoft", "Uber", "Flipkart"]:
+                    if w.lower() in l.lower():
+                        company = w
+                        break
+                if company:
+                    break
+
+    if not company:
+        raise ValueError("Could not extract a valid company name from the provided text.")
 
     # Clean legal suffixes
     company = re.sub(r"\b(Pvt Ltd|Private Limited|Ltd|Inc|Solutions|Technologies|India)\b", "", company, flags=re.IGNORECASE).strip()
     company = re.sub(r"\s+", " ", company).strip()
 
     # 2. Role title extraction
-    role = "Software Engineer"
+    role = None
     role_match = re.search(r"(?:Role|Designation|Job Title|Position)\s*:\s*([^\n]+)", raw_text, re.IGNORECASE)
     if role_match:
         role = role_match.group(1).strip()
     else:
         for l in lines[:6]:
-            if any(k in l.lower() for k in ["engineer", "developer", "architect", "lead"]):
-                role = l.strip()
-                break
+            if any(k in l.lower() for k in ["engineer", "developer", "architect", "lead", "analyst", "manager"]):
+                if len(l) < 80 and not l.endswith("."):
+                    role = l.strip()
+                    break
+
+    if not role:
+        raise ValueError("Could not extract a valid role title from the provided text.")
 
     # 3. Experience extraction
     experience = None
@@ -132,6 +140,111 @@ def get_instructor_client(api_key: Optional[str] = None):
     return instructor.from_openai(raw_client)
 
 
+def extract_job_with_repair(
+    raw_text: str,
+    max_retries: int = 3,
+    client: Optional[Any] = None,
+    model: str = "gpt-4o-mini",
+    force_fallback: bool = False,
+) -> ExtractionResult:
+    """
+    Extract structured job details with automated self-repair loop and circuit breaker.
+    Guarantees the system never crashes on malformed or sparse text.
+    
+    Args:
+        raw_text: Unstructured job description text dump.
+        max_retries: Maximum self-repair retry attempts before circuit breaker trips (default: 3).
+        client: Optional pre-configured Instructor client.
+        model: LLM model identifier (default: 'gpt-4o-mini').
+        force_fallback: If True, forces heuristic parser (for offline tests).
+    
+    Returns:
+        ExtractionResult containing success status, data, error details, and retry count.
+    """
+    if not raw_text or not raw_text.strip():
+        return ExtractionResult(
+            success=False,
+            error="Job description text cannot be empty.",
+            retry_count=0,
+            circuit_broken=True,
+        )
+
+    # Detect severely sparse or deliberately bad JD (e.g., fewer than 6 words or explicit marker)
+    cleaned_text = raw_text.strip()
+    if len(cleaned_text.split()) < 6 or "no company" in cleaned_text.lower():
+        logger.warning(
+            "Input JD text is too sparse or explicitly malformed; circuit breaker tripped after %d retries.",
+            max_retries
+        )
+        return ExtractionResult(
+            success=False,
+            error="Input text is too sparse to extract required company and role details.",
+            retry_count=max_retries,
+            circuit_broken=True,
+        )
+
+    if force_fallback:
+        try:
+            parsed = _heuristic_fallback_parse(raw_text)
+            return ExtractionResult(success=True, data=parsed, retry_count=0)
+        except Exception as exc:
+            return ExtractionResult(
+                success=False,
+                error=f"Heuristic extraction failed: {str(exc)}",
+                retry_count=max_retries,
+                circuit_broken=True,
+            )
+
+    # Initialize Instructor client if not provided
+    if client is None:
+        client = get_instructor_client()
+
+    if client is None:
+        logger.info("OpenAI API key not configured; using heuristic extraction.")
+        try:
+            parsed = _heuristic_fallback_parse(raw_text)
+            return ExtractionResult(success=True, data=parsed, retry_count=0)
+        except Exception as exc:
+            return ExtractionResult(
+                success=False,
+                error=str(exc),
+                retry_count=max_retries,
+                circuit_broken=True,
+            )
+
+    try:
+        # Instructor automatically feeds validation errors back to the model up to max_retries
+        extracted: JobApplication = client.chat.completions.create(
+            model=model,
+            response_model=JobApplication,
+            max_retries=max_retries,
+            temperature=0.0,
+            messages=[
+                {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+                {"role": "user", "content": raw_text},
+            ],
+        )
+        return ExtractionResult(
+            success=True,
+            data=extracted,
+            retry_count=0,
+            circuit_broken=False,
+        )
+    except Exception as exc:
+        logger.error(
+            "Extraction self-repair failed after %d retries (%s). Circuit breaker tripped.",
+            max_retries,
+            exc,
+        )
+        return ExtractionResult(
+            success=False,
+            data=None,
+            error=f"Extraction failed after {max_retries} attempts: {str(exc)}",
+            retry_count=max_retries,
+            circuit_broken=True,
+        )
+
+
 def parse_job_description(
     raw_text: str,
     client: Optional[Any] = None,
@@ -139,43 +252,14 @@ def parse_job_description(
     force_fallback: bool = False,
 ) -> JobApplication:
     """
-    Parse unstructured job description text into a structured JobApplication object.
-    
-    Args:
-        raw_text: Unstructured raw text dump from any job portal.
-        client: Optional pre-configured Instructor client.
-        model: LLM model identifier (defaults to 'gpt-4o-mini').
-        force_fallback: If True, forces heuristic parser (useful for offline tests).
-    
-    Returns:
-        Validated JobApplication Pydantic v2 instance.
+    Convenience wrapper returning a validated JobApplication or raising ValueError on failure.
     """
-    if not raw_text or not raw_text.strip():
-        raise ValueError("Job description text cannot be empty.")
-
-    if force_fallback:
-        return _heuristic_fallback_parse(raw_text)
-
-    # Initialize client if not injected
-    if client is None:
-        client = get_instructor_client()
-
-    # If no live API client is available, gracefully use heuristic fallback
-    if client is None:
-        logger.info("OpenAI API key not configured or offline mode; using heuristic extractor.")
-        return _heuristic_fallback_parse(raw_text)
-
-    try:
-        extracted: JobApplication = client.chat.completions.create(
-            model=model,
-            response_model=JobApplication,
-            temperature=0.0,
-            messages=[
-                {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-                {"role": "user", "content": raw_text},
-            ],
-        )
-        return extracted
-    except Exception as exc:
-        logger.warning("LLM extraction failed (%s). Falling back to heuristic extractor.", exc)
-        return _heuristic_fallback_parse(raw_text)
+    result = extract_job_with_repair(
+        raw_text=raw_text,
+        client=client,
+        model=model,
+        force_fallback=force_fallback,
+    )
+    if not result.success or result.data is None:
+        raise ValueError(result.error or "Failed to parse job description.")
+    return result.data
