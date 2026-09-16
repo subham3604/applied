@@ -17,6 +17,7 @@ Section 5 of SYSTEM_DESIGN.md:
 - Node 9: `dead_letter_log`
 """
 
+from datetime import datetime, timezone
 import logging
 import uuid
 from typing import Any, Dict
@@ -180,21 +181,79 @@ def node_self_repair(state: AgentState) -> Dict[str, Any]:
 def node_entity_resolution(state: AgentState) -> Dict[str, Any]:
     """
     Node 4: Entity Resolution.
-    Maps company_raw and role_title to an existing application or identifies new application.
-    (Stub implementation for Day 9 skeleton; full fallback chain in Day 10).
+    Maps company_raw and role_title to an existing application or identifies new application
+    via the Multi-Level Entity Resolution fallback chain.
     """
+    from worker.entity_resolution import (
+        ApplicationCandidate,
+        ResolutionAction,
+        resolve_entity,
+    )
+    from db.models import Application
+    from db.session import SessionLocal
+
     path = _record_path(state, "entity_resolution")
     logger.info("Node 4 Entity Resolution executing")
 
-    # If already set by test/state, retain it
-    if state.get("matched_application_id") or state.get("is_new_application"):
-        return {"execution_path": path}
+    # If state already has matched_application_id, is_new_application, or resolution_confidence explicitly forced
+    # and no candidate_apps provided, retain previous behavior for isolated node testing
+    if (state.get("matched_application_id") or state.get("is_new_application") or state.get("resolution_confidence") == "AMBIGUOUS") and state.get("candidate_apps") is None:
+        return {
+            "is_new_application": state.get("is_new_application", False),
+            "resolution_confidence": state.get("resolution_confidence", "HIGH"),
+            "resolution_note": state.get("resolution_note", "Entity matched via pre-set resolution"),
+            "execution_path": path,
+        }
 
-    # Default skeleton behavior: assume high confidence update if matched, or new record
+    # 1. Retrieve candidate applications (from state override or DB)
+    raw_candidates = state.get("candidate_apps")
+    candidate_apps: list[ApplicationCandidate] = []
+
+    if raw_candidates is not None:
+        for c in raw_candidates:
+            if isinstance(c, ApplicationCandidate):
+                candidate_apps.append(c)
+            elif isinstance(c, dict):
+                candidate_apps.append(ApplicationCandidate(**c))
+    else:
+        try:
+            with SessionLocal() as session:
+                db_apps = session.query(Application).all()
+                for app in db_apps:
+                    candidate_apps.append(
+                        ApplicationCandidate(
+                            id=str(app.id),
+                            company_name=app.company_name,
+                            canonical_company_name=app.canonical_company_name,
+                            role_title=app.role_title,
+                            applied_at=app.applied_at,
+                            current_status=app.current_status.value if hasattr(app.current_status, "value") else str(app.current_status),
+                        )
+                    )
+        except Exception as exc:
+            logger.warning("Could not query DB applications in node_entity_resolution: %s", exc)
+
+    # 2. Extract resolution inputs from state
+    parsed = state.get("parsed_event") or {}
+    company_raw = parsed.get("company_raw", "")
+    role_title = parsed.get("role_title")
+    email_received_at = state.get("email_received_at", datetime.now(timezone.utc))
+
+    # 3. Execute Entity Resolution engine
+    resolution = resolve_entity(
+        company_raw=company_raw,
+        role_title=role_title,
+        email_received_at=email_received_at,
+        candidate_apps=candidate_apps,
+    )
+
+    is_new = (resolution.action == ResolutionAction.CREATE_NEW)
+
     return {
-        "is_new_application": state.get("is_new_application", False),
-        "resolution_confidence": state.get("resolution_confidence", "HIGH"),
-        "resolution_note": state.get("resolution_note", "Entity matched via skeleton resolver"),
+        "matched_application_id": resolution.matched_application_id,
+        "resolution_confidence": resolution.confidence.value,
+        "resolution_note": resolution.note,
+        "is_new_application": is_new,
         "execution_path": path,
     }
 

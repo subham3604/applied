@@ -11,7 +11,7 @@ Defines:
 
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional, TypedDict
+from typing import Any, List, Optional, TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -80,6 +80,7 @@ class AgentState(TypedDict):
     resolution_confidence: str  # "HIGH" | "LOW" | "AMBIGUOUS" | "NONE"
     resolution_note: str
     is_new_application: bool
+    candidate_apps: Optional[List[Any]]
 
     # Node 4 & 5: State Machine & Commit
     status_changed: bool
