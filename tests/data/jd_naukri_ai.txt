@@ -1,0 +1,22 @@
+Naukri Job Alert: New Opening Matching Your Profile
+Organization: Zomato Media Private Limited
+Designation: AI Systems Engineer (LLMs & RAG)
+Work Location: Gurugram / Gurgaon (On-site)
+Min Experience Required: 2.0 Years
+
+About the Role:
+At Zomato, we are transforming our dining and quick-commerce discovery experience through intelligent agentic pipelines and grounded LLM workflows. We are seeking an AI Systems Engineer with proven experience deploying production GenAI systems.
+
+What you will do:
+- Engineer production-grade Retrieval-Augmented Generation (RAG) architectures with vector databases (pgvector, Milvus, Qdrant).
+- Formulate deterministic LLM output parsing, schema validations, and hallucination guardrails using Instructor and Pydantic.
+- Build multi-step agentic workflows and evaluation test benches with LangGraph, LangChain, and Pytest.
+- Serve high-concurrency LLM inference endpoints using FastAPI, Celery, and OpenAI / open-source models.
+- Track metrics, token usage, and latency optimization across distributed microservices.
+
+Desired Profile:
+- Bachelor's degree in Computer Science or equivalent.
+- 2+ years of professional backend software development experience with Python.
+- Demonstrated hands-on experience building grounded RAG applications with pgvector or dedicated vector search engines.
+- Familiarity with state machines, LangGraph, and prompt orchestration techniques.
+- Solid grasp of SQL and PostgreSQL data modeling.

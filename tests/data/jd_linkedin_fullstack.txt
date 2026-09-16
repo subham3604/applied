@@ -1,0 +1,21 @@
+LinkedIn Job Post: Easy Apply
+Company: PhonePe India Tech Solutions
+Job Title: Full Stack Software Engineer
+Location: Bengaluru, Karnataka, India (Hybrid)
+Employment Type: Full-time
+
+PhonePe is India's leading fintech platform with over 500 million registered users. We process billions of UPI transactions every month. We are expanding our merchant dashboard engineering team.
+
+Responsibilities:
+- Build end-to-end features spanning modern interactive web dashboards and scalable backend APIs.
+- Write high-performance Python services utilizing FastAPI and SQLAlchemy.
+- Design database schemas in PostgreSQL and manage migrations with Alembic.
+- Develop responsive, dynamic web frontends with React or Streamlit control surfaces.
+- Ensure 99.99% availability by deploying containerized services with Docker on Linux VPS and Kubernetes clusters.
+
+Requirements:
+- 1 to 4 years of experience building scalable web applications.
+- Strong proficiency in Python, JavaScript/TypeScript, and modern web frameworks.
+- Experience with relational databases like PostgreSQL and in-memory caches like Redis.
+- Understanding of reverse proxies (Caddy or Nginx) and TLS configuration is a plus.
+- Passion for fintech and clean, test-driven code.

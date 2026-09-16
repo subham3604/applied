@@ -1,0 +1,23 @@
+Posted on Naukri.com — 2 days ago | 143 applicants
+Company: Bundl Technologies Pvt Ltd (Swiggy)
+Role: Senior Software Development Engineer - Backend (SDE-2)
+Location: Bengaluru / Bangalore (Hybrid - 3 days in office)
+Experience: 3 - 6 years
+Salary: ₹ 28,00,000 - 38,00,000 P.A.
+
+Job Description:
+Swiggy is looking for passionate SDE-2 Backend Engineers to join our core order management and delivery logistics platform. You will be responsible for designing, building, and operating high-throughput microservices that power millions of customer orders every day.
+
+Key Responsibilities:
+- Design and develop robust, scalable, and secure backend services in Python and Go.
+- Architect high-performance relational and NoSQL databases using PostgreSQL and Redis.
+- Implement distributed event streaming pipelines with Apache Kafka for asynchronous order event handling.
+- Collaborate with infrastructure teams to containerize workloads using Docker and manage Kubernetes deployments.
+- Optimize p99 API latencies and troubleshoot distributed system bottlenecks.
+
+Required Skills & Experience:
+- 3+ years of strong experience in backend engineering using Python (FastAPI / Django) or Golang.
+- In-depth understanding of relational databases, indexing, and query optimization (PostgreSQL / MySQL).
+- Solid experience with distributed caching and message brokers (Redis, Kafka, RabbitMQ).
+- Familiarity with containerization and orchestration tools (Docker, Kubernetes).
+- Strong computer science fundamentals in data structures, algorithms, and system design.
