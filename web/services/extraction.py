@@ -132,8 +132,9 @@ def get_instructor_client(api_key: Optional[str] = None):
     import instructor
     from openai import OpenAI
 
-    key = api_key or os.getenv("OPENAI_API_KEY")
-    if not key or key == "sk-proj-placeholder":
+    raw_key = api_key or os.getenv("OPENAI_API_KEY")
+    key = raw_key.strip().strip('"\'') if raw_key else None
+    if not key or key.startswith("sk-proj-placeholder"):
         return None
 
     raw_client = OpenAI(api_key=key)
@@ -169,9 +170,9 @@ def extract_job_with_repair(
             circuit_broken=True,
         )
 
-    # Detect severely sparse or deliberately bad JD (e.g., fewer than 6 words or explicit marker)
+    # Detect severely sparse or deliberately bad JD (e.g., fewer than 12 words or explicit marker)
     cleaned_text = raw_text.strip()
-    if len(cleaned_text.split()) < 6 or "no company" in cleaned_text.lower():
+    if len(cleaned_text.split()) < 12 or "no company" in cleaned_text.lower():
         logger.warning(
             "Input JD text is too sparse or explicitly malformed; circuit breaker tripped after %d retries.",
             max_retries

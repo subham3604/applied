@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+data/master_vault.json
+!data/master_vault.example.json
 credentials.json
 *credentials*.json
 client_secret*.json

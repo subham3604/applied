@@ -1,0 +1,45 @@
+[
+  {
+    "category": "WORK_EXPERIENCE",
+    "title": "Software Engineer",
+    "bullet_point": "Architected and deployed asynchronous microservices handling over 10M daily requests with p99 latency under 50ms.",
+    "tech_tags": [
+      "Python",
+      "FastAPI",
+      "Kafka",
+      "Microservices"
+    ]
+  },
+  {
+    "category": "PROJECT",
+    "title": "AI Cloud Sandbox",
+    "bullet_point": "Built an automated sandbox platform executing preview containers in isolated Kubernetes clusters.",
+    "tech_tags": [
+      "Kubernetes",
+      "Docker",
+      "Go",
+      "Redis"
+    ]
+  },
+  {
+    "category": "SKILL",
+    "title": "Languages & Databases",
+    "bullet_point": "Proficient in Python, Java, TypeScript, PostgreSQL, Redis, and Docker.",
+    "tech_tags": [
+      "Python",
+      "Java",
+      "TypeScript",
+      "PostgreSQL",
+      "Redis"
+    ]
+  },
+  {
+    "category": "EDUCATION",
+    "title": "Bachelor of Technology",
+    "bullet_point": "Graduated with coursework in Algorithms, Operating Systems, and Distributed Systems.",
+    "tech_tags": [
+      "Computer Science",
+      "Algorithms"
+    ]
+  }
+]

@@ -27,42 +27,7 @@ logging.basicConfig(
 logger = logging.getLogger("seed_vault")
 
 
-def get_mock_embedding(text: str, dim: int = 1536) -> List[float]:
-    """
-    Deterministic pseudo-embedding for testing when OpenAI API key is unavailable.
-    Generates a normalized 1536-dim vector based on sha256 hashes of the text.
-    """
-    import math
-    vector = []
-    base_hash = hashlib.sha256(text.encode("utf-8")).digest()
-    for i in range(dim):
-        # Derive pseudo-floats deterministically
-        byte_val = base_hash[(i * 7) % len(base_hash)]
-        val = (byte_val / 255.0) - 0.5
-        vector.append(val)
-    
-    # Normalize to unit vector
-    norm = math.sqrt(sum(x * x for x in vector)) or 1.0
-    return [x / norm for x in vector]
-
-
-def compute_embedding(text: str, api_key: str | None) -> List[float]:
-    """Compute embedding using OpenAI text-embedding-3-small or fallback to deterministic mock."""
-    if api_key and api_key.startswith("sk-") and not api_key.startswith("sk-proj-placeholder"):
-        try:
-            from openai import OpenAI
-            client = OpenAI(api_key=api_key)
-            response = client.embeddings.create(
-                input=text,
-                model="text-embedding-3-small"
-            )
-            return response.data[0].embedding
-        except Exception as exc:
-            logger.warning("OpenAI API call failed (%s). Falling back to deterministic embedding.", exc)
-            return get_mock_embedding(text)
-    else:
-        logger.info("No active OpenAI API key detected in .env. Generating deterministic 1536-dim vector.")
-        return get_mock_embedding(text)
+from web.services.rag_engine import embed_text
 
 
 def seed_vault(json_path: Path, clear_existing: bool = False):
@@ -104,7 +69,8 @@ def seed_vault(json_path: Path, clear_existing: bool = False):
                 logger.warning("Invalid category '%s', defaulting to WORK_EXPERIENCE", category_str)
                 category = VaultCategory.WORK_EXPERIENCE.value
 
-            embedding = compute_embedding(bullet_point, api_key)
+            text_to_embed = f"{title}: {bullet_point} {' '.join(tech_tags)}"
+            embedding = embed_text(text_to_embed)
 
             vault_entry = MasterExperienceVault(
                 id=uuid.uuid4(),

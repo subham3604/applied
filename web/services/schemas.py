@@ -100,13 +100,28 @@ class JobApplication(BaseModel):
             return cleaned
         return v or []
 
-    @field_validator("company_name", "role_title")
+    @field_validator("company_name")
     @classmethod
-    def strip_strings(cls, v: str) -> str:
+    def validate_company_name(cls, v: str) -> str:
         if isinstance(v, str):
             v = v.strip()
-            if not v:
-                raise ValueError("Field cannot be empty or only whitespace")
+            forbidden = {
+                "direct", "unknown", "n/a", "none", "not specified", "unspecified",
+                "not provided", "not mentioned", "employer", "company", "confidential",
+                "hiring company", "direct employer"
+            }
+            if not v or v.lower() in forbidden or v.lower().startswith("not "):
+                raise ValueError(f"'{v}' is not a valid company name. The company name must be explicitly stated in the text.")
+        return v
+
+    @field_validator("role_title")
+    @classmethod
+    def validate_role_title(cls, v: str) -> str:
+        if isinstance(v, str):
+            v = v.strip()
+            forbidden = {"unknown", "n/a", "none", "not specified", "unspecified", "role", "job"}
+            if not v or v.lower() in forbidden:
+                raise ValueError(f"'{v}' is not a valid role title. The role title must be explicitly stated in the text.")
         return v
 
 
