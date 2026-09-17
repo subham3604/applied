@@ -2,20 +2,21 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (libpq-dev & build-essential for psycopg2/C-extensions, curl for healthcheck)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY web/requirements.txt ./web/requirements.txt
+RUN pip install --no-cache-dir -r web/requirements.txt
 
 COPY . .
 
-EXPOSE 8501
+EXPOSE 8000
 
-HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
+HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
+    CMD curl --fail http://localhost:8000/health || exit 1
 
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true"]
+CMD ["uvicorn", "web.main:app", "--host", "0.0.0.0", "--port", "8000"]

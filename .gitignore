@@ -57,3 +57,7 @@ postgres_data/
 .vscode/
 *.swp
 *.swo
+
+# Frontend (separate standalone repository)
+frontend/
+

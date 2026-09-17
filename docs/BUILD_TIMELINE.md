@@ -330,7 +330,7 @@
 - [x] Implement serializers matching frontend `relay-data.ts` TypeScript types (field names, enum mapping, deadline tone, computed priority)
 - [x] Configure CORS middleware for `http://localhost:5173`, `http://localhost:3000`, and Vercel preview domains
 - [x] Update `PipelineResult` in `pipeline.py` to return `location` and `source_platform`
-- [ ] Create `src/lib/api.ts` in frontend repo (`pixel-perfect-render-1659`) with typed fetch helpers
+- [x] Create `src/lib/api.ts` in frontend repo (`pixel-perfect-render-1659`) with typed fetch helpers
 
 **Deliverable check:** `curl http://localhost:8000/api/applications` and `curl http://localhost:8000/api/metrics` return clean JSON matching frontend TypeScript interfaces.
 

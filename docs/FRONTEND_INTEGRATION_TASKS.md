@@ -31,7 +31,7 @@
 
 ## 1. Frontend Tasks (`pixel-perfect-render-1659` Repo)
 
-### [ ] Task 1.1: Create Central API Client (`src/lib/api.ts`)
+### [x] Task 1.1: Create Central API Client (`src/lib/api.ts`)
 Create a typed API client so routes do not have hardcoded fetch strings.
 
 ```typescript
@@ -139,7 +139,7 @@ In the Vercel Project Dashboard:
 
 ## 2. Backend Tasks (`JobTracker` Workspace)
 
-### [ ] Task 2.1: Update `web/Dockerfile` to FastAPI
+### [x] Task 2.1: Update `web/Dockerfile` to FastAPI
 Modify `web/Dockerfile` so the `web` container runs the FastAPI application via `uvicorn` instead of Streamlit:
 
 ```dockerfile
@@ -166,7 +166,7 @@ CMD ["uvicorn", "web.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 ---
 
-### [ ] Task 2.2: Add Integration Test Suite (`tests/test_api_endpoints.py`)
+### [x] Task 2.2: Add Integration Test Suite (`tests/test_api_endpoints.py`)
 Verify that all 7 endpoints return HTTP 200 and exact matching schemas expected by the React frontend:
 1. `GET /api/metrics` → returns `{ total, applied, pending_oa, active_interviews, offers, rejected }`
 2. `GET /api/applications` → returns array matching frontend `Application` interface
