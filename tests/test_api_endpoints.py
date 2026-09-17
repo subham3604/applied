@@ -239,7 +239,7 @@ def test_update_resume_success(client, mock_db):
 
 
 def test_update_resume_not_found(client, mock_db):
-    """PATCH /api/applications/{id}/resume returns 404 if snapshot missing."""
+    """PATCH /api/applications/{id}/resume returns 404 if application missing."""
     mock_db.query.return_value.filter.return_value.first.return_value = None
 
     response = client.patch(f"/api/applications/{uuid.uuid4()}/resume", json={"markdown": "content"})

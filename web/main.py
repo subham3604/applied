@@ -16,11 +16,12 @@ Endpoints:
 All response shapes match the TypeScript types in src/lib/relay-data.ts exactly.
 """
 
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import func
@@ -363,6 +364,10 @@ def update_resume(app_id: str, payload: UpdateResumeRequest, db: Session = Depen
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid application ID format")
 
+    app_row = db.query(Application).filter(Application.id == uid).first()
+    if not app_row:
+        raise HTTPException(status_code=404, detail="Application not found")
+
     snapshot = (
         db.query(ResumeSnapshot)
         .filter(
@@ -372,17 +377,25 @@ def update_resume(app_id: str, payload: UpdateResumeRequest, db: Session = Depen
         .first()
     )
     if not snapshot:
-        raise HTTPException(
-            status_code=404,
-            detail="No active resume snapshot found for this application",
+        snapshot = ResumeSnapshot(
+            id=uuid.uuid4(),
+            application_id=uid,
+            markdown_content=payload.markdown,
+            is_user_edited=True,
+            is_active=True,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
         )
+        db.add(snapshot)
+    else:
+        snapshot.markdown_content = payload.markdown
+        snapshot.is_user_edited = True
+        snapshot.updated_at = datetime.now(timezone.utc)
 
-    snapshot.markdown_content = payload.markdown
-    snapshot.is_user_edited = True
-    snapshot.updated_at = datetime.now(timezone.utc)
     db.commit()
+    db.refresh(snapshot)
 
-    return {"success": True, "resume_snapshot_id": str(snapshot.id)}
+    return {"success": True, "resume_snapshot_id": str(snapshot.id), "markdown": snapshot.markdown_content}
 
 
 @app.patch("/api/applications/{app_id}/status")

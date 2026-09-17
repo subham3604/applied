@@ -224,10 +224,21 @@ def node_extract_event(state: AgentState) -> Dict[str, Any]:
                     date_str = date_pattern.group(1).strip()
                     parsed_dt = _parse_deadline_datetime(date_str)
                     deadline = parsed_dt.isoformat() if parsed_dt else date_str
+    # Extract role title if explicitly stated in email text or subject
+    role_title = None
+    role_pattern = re.search(
+        r'(?:for the|for a|as a|as an|position of|role of)\s+([A-Za-z0-9\s\-\/\(\)]+?)(?:\s+(?:position|role|opportunity)|\.|\n|,|$)',
+        combined,
+        re.IGNORECASE,
+    )
+    if role_pattern and len(role_pattern.group(1).strip()) > 2:
+        cand_role = role_pattern.group(1).strip()
+        if not any(bad in cand_role.lower() for bad in ("interview", "assessment", "application", "submission", "next steps")):
+            role_title = cand_role
 
     extracted = {
         "company_raw": company,
-        "role_title": None,
+        "role_title": role_title,
         "event_type": event_type.value,
         "deadline": deadline,
     }
