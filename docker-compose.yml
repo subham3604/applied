@@ -48,7 +48,9 @@ services:
         condition: service_healthy
 
   worker:
-    build: ./worker
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
     restart: always
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-tracker_admin}:${POSTGRES_PASSWORD:-tracker_secret_password_change_me}@db:5432/${POSTGRES_DB:-job_tracker}
@@ -56,6 +58,7 @@ services:
       - GMAIL_CLIENT_ID=${GMAIL_CLIENT_ID}
       - GMAIL_CLIENT_SECRET=${GMAIL_CLIENT_SECRET}
       - GMAIL_REFRESH_TOKEN=${GMAIL_REFRESH_TOKEN}
+      - WORKER_RUN_ON_STARTUP=${WORKER_RUN_ON_STARTUP:-true}
     networks:
       - tracker-net
     depends_on:
