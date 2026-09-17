@@ -25,6 +25,8 @@ class PipelineResult(BaseModel):
     company_name: Optional[str] = Field(None, description="Company name extracted from JD")
     role_title: Optional[str] = Field(None, description="Exact role title extracted from JD")
     canonical_company_name: Optional[str] = Field(None, description="Normalized lowercase alphanumeric company name")
+    source_platform: Optional[str] = Field(None, description="Source platform: Naukri, LinkedIn, Direct, etc.")
+    location: Optional[str] = Field(None, description="Job location extracted from JD")
     primary_tech_stack: List[str] = Field(default_factory=list, description="Extracted core technologies")
     resume_snapshot_id: Optional[uuid.UUID] = Field(None, description="UUID of active ResumeSnapshot row")
     markdown_resume: Optional[str] = Field(None, description="Assembled grounded Markdown resume")
@@ -124,6 +126,8 @@ def process_raw_jd(
             company_name=job.company_name,
             role_title=job.role_title,
             canonical_company_name=job.canonical_company_name,
+            source_platform=job.source_platform,
+            location=job.location,
             primary_tech_stack=job.primary_tech_stack,
             resume_snapshot_id=snapshot.id,
             markdown_resume=resume_res.markdown_content,

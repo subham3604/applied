@@ -41,10 +41,10 @@ The goal is to **eliminate all manual bookkeeping** while making the AI the func
 
 ## 2. System Architecture Overview
 
-The system is a **hybrid event-driven pipeline** deployed as a containerized monolith on a single VPS. It separates synchronous user-triggered actions (manual JD paste, direct status overrides) from asynchronous background processing (daily Gmail polling and state progression), while sharing a single PostgreSQL database as the source of truth.
+The system is a **hybrid event-driven pipeline** deployed across two tiers: a React frontend on Vercel's global CDN and a containerized backend on a single DigitalOcean VPS. It separates synchronous user-triggered actions (manual JD paste, direct status overrides) from asynchronous background processing (daily Gmail polling and state progression), while sharing a single PostgreSQL database as the source of truth.
 
 ![System Architecture Diagram](./assets/system_architecture_diagram.jpg)
-*Figure 1: High-level system architecture — all services run within a Docker Compose network on a single DigitalOcean Droplet*
+*Figure 1: High-level system architecture — React frontend on Vercel, FastAPI + Worker + PostgreSQL on a single DigitalOcean Droplet behind Caddy*
 
 ### Architectural Principle: Why a Monolith?
 
@@ -56,38 +56,56 @@ A microservices architecture would introduce service mesh complexity, inter-serv
 
 ### 3.1 Ingress Layer — Caddy 2
 
-**Role:** Single entry point. All inbound traffic hits Caddy on ports 80 and 443.
+**Role:** Single entry point for API traffic on the DigitalOcean Droplet.
 
 **Responsibilities:**
 - Automatic TLS certificate provisioning and renewal via Let's Encrypt
-- Reverse proxy to the internal Streamlit app on port `8501`
+- Reverse proxy from `api.yourdomain.com` to the internal FastAPI container on port `8000`
 - Implicit edge firewall — only ports 80 and 443 are externally reachable
+
+**Caddyfile (production):**
+```caddyfile
+api.yourdomain.com {
+    reverse_proxy web:8000
+}
+```
+
+> **Note:** The React frontend is served entirely by Vercel's CDN — Caddy on the Droplet never handles React static file serving. The domain split is: `relay.yourdomain.com` → Vercel, `api.yourdomain.com` → DigitalOcean Droplet.
 
 **Design Decision:** Caddy over Nginx eliminates manual SSL configuration, which is a common deployment failure point.
 
 ---
 
-### 3.2 User Interface Layer — Streamlit
+### 3.2 User Interface Layer — React + Vite + Tailwind CSS
 
-**Role:** The control dashboard. Serves both desktop and mobile browsers.
+**Deployment:** Vercel (free tier, global CDN, automatic HTTPS)
+**Repository:** separate repo; communicates with the backend exclusively via HTTP API calls to `api.yourdomain.com`
 
 **Responsibilities:**
-- **JD Text Drop:** raw `st.text_area` where unstructured job description text is pasted
-- **Pipeline Dashboard:** Kanban view of all applications grouped by `current_status`
-- **Application Detail Card:** company metadata, stage history timeline (from `pipeline_events`), linked resume snapshot, and all update controls
-- **Resume Snapshot Editor:** pre-filled `st.text_area` with LLM-generated Markdown, editable before save
-- **Stage Update Drop:** text area on each card for pasting portal update text (CUJ-3)
-- **Direct Status Override:** dropdown + optional note field for phone-call updates, withdrawals, and manual corrections — no LLM involved
-- **Force Override (advanced):** escape hatch for correcting wrong auto-classifications — allows any state, gated behind an expander to prevent accidental use
-- **Ambiguous Match Resolution Widget:** surfaces unresolved emails (where entity resolution returned AMBIGUOUS) with full email body for user to assign or dismiss
+- **Kanban Pipeline Dashboard:** cards grouped by `current_status`, powered by `GET /api/applications`
+- **New Drop View:** JD textarea → "Parse & Tailor Resume" (`POST /api/applications/parse`) → editable Markdown resume panel → "Confirm & Save" (`PATCH /api/applications/{id}/resume`)
+- **Application Detail Drawer:** slide-in panel showing full `pipeline_events` audit timeline, active resume snapshot, and all update controls
+- **Direct Status Override:** dropdown of valid next states + optional note → `PATCH /api/applications/{id}/status` (zero LLM, no DAG validation)
+- **Portal Text Drop:** paste recruiter/portal message → AI-parsed → `POST /api/applications/{id}/text-update`
+- **Ambiguous Match Banner:** surfaces unresolved emails with assign/dismiss buttons
+- **Stats Bar:** live counts via `GET /api/metrics`
 
-**Design Decision:** Streamlit eliminates the frontend build pipeline. The UI can be upgraded to React later because all business logic lives in FastAPI — the Streamlit layer is a pure presentation concern.
+**Tech Stack:**
+| Library | Role |
+|---|---|
+| React 18 + Vite | UI framework + build tool |
+| Tailwind CSS | utility-first styling |
+| shadcn/ui | accessible component primitives |
+| TanStack Router | file-based client-side routing |
+| sonner | toast notifications |
+
+**Design Decision:** React on Vercel gives zero-cost, zero-maintenance static hosting with a global CDN and automatic HTTPS. The FastAPI backend on DigitalOcean is fully decoupled — it can serve any frontend without code changes.
 
 ---
 
-### 3.3 Internal Service Layer — FastAPI
+### 3.3 API Layer — FastAPI
 
-**Role:** Business logic core. Not exposed to the public internet; called only by Streamlit over the internal Docker network.
+**Role:** Public API surface. Exposed through Caddy at `api.yourdomain.com`. Called exclusively by the React frontend over HTTPS.
 
 **Responsibilities:**
 
@@ -832,12 +850,32 @@ ON CONFLICT (key) DO NOTHING;
 
 ---
 
-## 14. Deployment Architecture — DigitalOcean
+## 14. Deployment Architecture — Split Tier (Vercel + DigitalOcean)
+
+The system utilizes a modern split-tier deployment architecture:
+1. **Frontend Tier (Vercel):** React + Vite SPA deployed on Vercel's global CDN with automated edge TLS and zero-maintenance continuous delivery.
+2. **Backend & Worker Tier (DigitalOcean):** Containerized FastAPI backend, LangGraph background worker, PostgreSQL 16 (`pgvector`), and Caddy reverse proxy orchestrated via Docker Compose on a single Ubuntu 24.04 Droplet.
 
 ![Deployment Architecture](./assets/deployment_architecture.jpg)
-*Figure 4: Production deployment — 4 Docker containers on single Ubuntu 24.04 Droplet*
+*Figure 4: Production split deployment — React SPA on Vercel, 4 Docker containers on DigitalOcean Droplet behind Caddy*
 
-### Host Specification
+---
+
+### 14.1 Frontend Tier: Vercel
+
+The React frontend (`subham3604/pixel-perfect-render-1659`) connects directly to GitHub for automated previews and production deployments.
+
+#### Frontend Environment Variables (Vercel Project Settings)
+
+| Variable | Description | Example / Default |
+|---|---|---|
+| `VITE_API_URL` | Base public URL of the backend FastAPI service | `https://api.yourdomain.com` (or `http://localhost:8000` for local dev) |
+
+---
+
+### 14.2 Backend Tier: DigitalOcean Droplet
+
+#### Host Specification
 
 | Attribute | Value |
 |---|---|
@@ -849,7 +887,18 @@ ON CONFLICT (key) DO NOTHING;
 | Cost | ~\$12/month |
 | Region | BLR1 (Bangalore) |
 
-### docker-compose.yml
+#### Backend Environment Variables (`/opt/ai-job-tracker/.env`)
+
+| Variable | Description | Purpose |
+|---|---|---|
+| `POSTGRES_PASSWORD` | Strong random secret for Postgres | Secures DB container |
+| `DATABASE_URL` | SQLAlchemy connection string | `postgresql://tracker_admin:${POSTGRES_PASSWORD}@db:5432/job_tracker` |
+| `OPENAI_API_KEY` | OpenAI API Secret Key (`sk-...`) | LLM extraction, relevance gate, and RAG embeddings (`text-embedding-3-small`) |
+| `GMAIL_CLIENT_ID` | Google Cloud Console OAuth Client ID | Gmail API email poller |
+| `GMAIL_CLIENT_SECRET` | Google Cloud Console OAuth Client Secret | Gmail API token refresh |
+| `GMAIL_REFRESH_TOKEN` | Long-lived OAuth2 Refresh Token | Headless server background authorization |
+
+#### docker-compose.yml
 
 ```yaml
 services:
@@ -867,7 +916,7 @@ services:
     networks: [tracker-net]
 
   db:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     restart: always
     environment:
       POSTGRES_DB: job_tracker
@@ -883,7 +932,9 @@ services:
       retries: 5
 
   web:
-    build: ./web
+    build:
+      context: .
+      dockerfile: web/Dockerfile
     restart: always
     environment:
       - DATABASE_URL=postgresql://tracker_admin:${POSTGRES_PASSWORD}@db:5432/job_tracker
@@ -894,7 +945,9 @@ services:
         condition: service_healthy
 
   worker:
-    build: ./worker
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
     restart: always
     environment:
       - DATABASE_URL=postgresql://tracker_admin:${POSTGRES_PASSWORD}@db:5432/job_tracker
@@ -917,10 +970,18 @@ networks:
     driver: bridge
 ```
 
-### Deployment Runbook
+#### Caddyfile (DigitalOcean)
+
+```caddyfile
+api.yourdomain.com {
+    reverse_proxy web:8000
+}
+```
+
+#### Deployment Runbook
 
 ```bash
-# 1. Provision: Ubuntu 24.04, 2GB RAM, BLR1 region. Point A record to Droplet IP.
+# 1. Provision: Ubuntu 24.04, 2GB RAM, BLR1 region. Point A record (api.yourdomain.com) to Droplet IP.
 
 # 2. Server setup
 ssh root@<DROPLET_IP>
@@ -931,7 +992,7 @@ ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443/tcp && ufw enable
 # 3. Clone and configure
 git clone https://github.com/yourusername/ai-job-tracker.git /opt/ai-job-tracker
 cd /opt/ai-job-tracker
-# create .env with all secrets (NEVER commit this file)
+# Create .env with all backend secrets listed above (NEVER commit this file)
 
 # 4. Run headless Gmail OAuth locally FIRST, then copy tokens to .env
 # (python local_auth.py on your MacBook — generates the refresh token)
@@ -939,7 +1000,7 @@ cd /opt/ai-job-tracker
 # 5. Launch
 docker compose up -d --build
 docker compose ps
-docker compose logs -f worker
+docker compose logs -f web worker
 ```
 
 ---
@@ -956,7 +1017,7 @@ docker compose logs -f worker
 | `APPLICATION_RECEIVED` as non-transitioning event | Treating as a new state | Duplication when manual drop + Naukri summary email arrive for same application; state must not change on receipt confirmation |
 | `MANUAL_OVERRIDE` as third event source | Allow GMAIL_WORKER to override | Clean audit trail provenance; distinguishes AI-driven from human-driven state changes |
 | `worker_config` table in DB | Flat file on disk | Flat files disappear on container rebuild; DB updates are atomic |
-| Streamlit | React + Next.js | Zero frontend build pipeline; single-user tool; upgrade path exists by pointing React at FastAPI later |
+| React (Vercel) + FastAPI (DO) | Monolithic Streamlit on VPS | Streamlit proved rigid for production UI; decoupled React + Vite SPA on Vercel provides a modern, responsive Linear-style UI at zero cost, with clean decoupled HTTP API contracts |
 | Docker Compose | Kubernetes | K8s is appropriate for multi-tenant, high-throughput; single-user tool doesn't justify the operational cost |
 | pgvector for embeddings | Pinecone / Weaviate | Collocates vector search with relational data; zero additional cost; no extra credential to manage |
 
