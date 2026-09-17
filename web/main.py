@@ -23,9 +23,10 @@ from typing import List, Literal, Optional
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
-from db.models import Application, ApplicationStatus, EventSource, ResumeSnapshot
+from db.models import Application, ApplicationStatus, EventSource, PipelineEvent, ResumeSnapshot, WorkerConfig
 from db.session import SessionLocal
 from web.queries import get_pipeline_metrics
 from web.services.pipeline import PipelineResult, process_raw_jd
@@ -114,8 +115,8 @@ _SOURCE_TO_ORIGIN: dict = {
 
 def _deadline_display(deadline_dt: Optional[datetime]):
     """
-    Returns (deadline_text, tone) for a future deadline, or (None, None) if past/absent.
-    tone: "danger" if < 2 days, "warning" if < 7 days.
+    Returns (deadline_text, tone) for a detected deadline.
+    tone: "danger" if overdue or < 2 days, "warning" if < 7 days.
     """
     if not deadline_dt:
         return None, None
@@ -123,29 +124,58 @@ def _deadline_display(deadline_dt: Optional[datetime]):
     if deadline_dt.tzinfo is None:
         deadline_dt = deadline_dt.replace(tzinfo=timezone.utc)
     delta = deadline_dt - now
+    time_str = deadline_dt.strftime("%b %d, %I:%M %p").replace(" 0", " ")
     if delta.total_seconds() < 0:
-        return None, None
+        abs_days = abs(delta.days)
+        if abs_days == 0:
+            return f"Overdue: {time_str}", "danger"
+        return f"Overdue ({abs_days}d ago)", "danger"
     days = delta.days
-    time_str = deadline_dt.strftime("%b %d, %I:%M %p")
     tone = "danger" if days < 2 else "warning"
     return f"Due: {time_str}", tone
 
 
-def _relative_date(dt: Optional[datetime]) -> str:
-    """Return human-readable relative date string e.g. '3d ago', 'Today', 'Sep 5'."""
+def _format_applied(dt: Optional[datetime]) -> str:
+    """Return friendly applied string e.g. 'Applied 3h ago', 'Applied yesterday', 'Applied Sep 15'."""
+    if not dt:
+        return "Applied recently"
+    now = datetime.now(timezone.utc)
+    ts = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+    delta = now - ts
+    seconds = max(0, int(delta.total_seconds()))
+    if seconds < 3600:
+        mins = max(1, seconds // 60)
+        return f"Applied {mins}m ago" if mins > 1 else "Applied just now"
+    elif seconds < 86400:
+        hours = seconds // 3600
+        return f"Applied {hours}h ago"
+    elif delta.days == 1 or (now.date() - ts.date()).days == 1:
+        return "Applied yesterday"
+    elif delta.days < 7:
+        return f"Applied {delta.days}d ago"
+    return f"Applied {ts.strftime('%b %d')}"
+
+
+def _format_event_time(dt: Optional[datetime]) -> str:
+    """Format timeline event timestamp e.g. 'Today, 3:02 AM' or 'Sep 17, 9:32 PM'."""
     if not dt:
         return ""
     now = datetime.now(timezone.utc)
     ts = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
     delta = now - ts
-    if delta.days == 0:
-        hours = delta.seconds // 3600
-        return f"{hours}h ago" if hours > 0 else "Today"
-    elif delta.days == 1:
-        return "Yesterday"
+    time_str = ts.strftime("%I:%M %p").lstrip("0")
+    if delta.days == 0 and ts.date() == now.date():
+        return f"Today, {time_str}"
+    elif delta.days == 1 or (now.date() - ts.date()).days == 1:
+        return f"Yesterday, {time_str}"
     elif delta.days < 7:
-        return f"{delta.days}d ago"
-    return ts.strftime("%b %d")
+        return f"{ts.strftime('%b %d')}, {time_str}"
+    return f"{ts.strftime('%b %d, %Y')}, {time_str}"
+
+
+def _relative_date(dt: Optional[datetime]) -> str:
+    """Return human-readable relative date string e.g. '3d ago', 'Today', 'Sep 5'."""
+    return _format_event_time(dt)
 
 
 def _serialize_timeline_event(event) -> dict:
@@ -161,12 +191,13 @@ def _serialize_timeline_event(event) -> dict:
     )
 
     return {
-        "id":      str(event.id),
-        "title":   title,
-        "detail":  detail,
-        "date":    _relative_date(event.created_at),
-        "origin":  _SOURCE_TO_ORIGIN.get(event.source, "manual"),
-        "payload": raw,
+        "id":        str(event.id),
+        "title":     title,
+        "detail":    detail,
+        "date":      _format_event_time(event.created_at),
+        "timestamp": event.created_at.isoformat() if event.created_at else None,
+        "origin":    _SOURCE_TO_ORIGIN.get(event.source, "manual"),
+        "payload":   raw,
     }
 
 
@@ -181,7 +212,7 @@ def _serialize_application(
 
     Every field name and value maps 1:1 to what the TypeScript type expects.
     """
-    # ── Deadline: latest pipeline_event with a future detected_deadline
+    # ── Deadline: latest pipeline_event with a detected_deadline
     deadline_text = None
     deadline_tone = None
     sorted_events = sorted(
@@ -218,7 +249,8 @@ def _serialize_application(
         "role":         app.role_title,
         "stage":        _STATUS_TO_STAGE.get(app.current_status, "applied"),
         "source":       app.source_platform or "Direct",
-        "applied":      app.applied_at.isoformat() if app.applied_at else "",
+        "applied":      _format_applied(app.applied_at),
+        "applied_at":   app.applied_at.isoformat() if app.applied_at else "",
         "deadline":     deadline_text,
         "deadlineTone": deadline_tone,
         "stack":        app.primary_tech_stack or [],
@@ -408,6 +440,40 @@ def text_update(app_id: str, payload: TextUpdateRequest, db: Session = Depends(g
         "event_id":   str(event.id),
         "new_status": event.to_status.value,
         "stage":      _STATUS_TO_STAGE.get(event.to_status, "applied"),
+    }
+
+
+# ==============================================================================
+# Worker status — live background Gmail poller sync and health state
+# ==============================================================================
+
+@app.get("/api/worker/status")
+def get_worker_status(db: Session = Depends(get_db)):
+    """
+    Returns live background Gmail worker status and sync information from worker_config.
+    """
+    row = db.query(WorkerConfig).filter(WorkerConfig.key == "last_checked_at").first()
+    
+    latest_event = (
+        db.query(PipelineEvent)
+        .filter(PipelineEvent.source == EventSource.GMAIL_WORKER)
+        .order_by(PipelineEvent.created_at.desc())
+        .first()
+    )
+    
+    last_synced_dt = row.updated_at if row else (latest_event.created_at if latest_event else None)
+    
+    return {
+        "active": True,
+        "schedule": "Daily at 08:00 AM UTC",
+        "last_synced_at": last_synced_dt.isoformat() if last_synced_dt else None,
+        "last_checked_boundary": row.value if row else None,
+        "total_worker_events": (
+            db.query(func.count(PipelineEvent.id))
+            .filter(PipelineEvent.source == EventSource.GMAIL_WORKER)
+            .scalar()
+            or 0
+        ),
     }
 
 

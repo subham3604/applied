@@ -28,6 +28,16 @@ def get_pipeline_metrics(db: Session) -> dict:
         db.query(
             func.count(Application.id).label("total"),
             func.count(
+                case(
+                    (
+                        Application.current_status.notin_(
+                            [ApplicationStatus.REJECTED, ApplicationStatus.WITHDRAWN]
+                        ),
+                        1,
+                    )
+                )
+            ).label("total_active"),
+            func.count(
                 case((Application.current_status == ApplicationStatus.APPLIED, 1))
             ).label("applied"),
             func.count(
@@ -55,6 +65,7 @@ def get_pipeline_metrics(db: Session) -> dict:
     if not row or row.total is None:
         return {
             "total": 0,
+            "total_active": 0,
             "applied": 0,
             "pending_oa": 0,
             "active_interviews": 0,
@@ -64,6 +75,7 @@ def get_pipeline_metrics(db: Session) -> dict:
 
     return {
         "total": row.total or 0,
+        "total_active": row.total_active or 0,
         "applied": row.applied or 0,
         "pending_oa": row.pending_oa or 0,
         "active_interviews": row.active_interviews or 0,

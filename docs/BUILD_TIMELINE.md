@@ -341,9 +341,9 @@
 **Time estimate:** 4 hours
 
 **Tasks:**
-- [ ] Wire `src/routes/index.tsx` with dynamic state from `fetchApplications()` and `fetchMetrics()`
-- [ ] Connect search query input and stage filters ("All", "High Priority", "Active", "Archived") to live application state
-- [ ] Wire `src/routes/new-drop.tsx`:
+- [x] Wire `src/routes/index.tsx` with dynamic state from `fetchApplications()` and `fetchMetrics()`
+- [x] Connect search query input and stage filters ("All", "High Priority", "Active", "Archived") to live application state
+- [x] Wire `src/routes/new-drop.tsx`:
   - On "🚀 Parse & Tailor Resume" click: call `POST /api/applications/parse` with `{ jd_text, source_platform }`
   - Populate extracted metadata card (company, role, stack, location) and pre-fill Markdown resume editor
   - Show loading state and error toasts via `sonner`

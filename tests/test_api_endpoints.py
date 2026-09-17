@@ -302,6 +302,7 @@ def test_get_pipeline_metrics_query_logic(mock_db):
     # Test case 1: DB has counts
     mock_row = MagicMock()
     mock_row.total = 10
+    mock_row.total_active = 9
     mock_row.applied = 4
     mock_row.pending_oa = 2
     mock_row.active_interviews = 2
@@ -312,6 +313,7 @@ def test_get_pipeline_metrics_query_logic(mock_db):
     metrics = get_pipeline_metrics(mock_db)
     assert metrics == {
         "total": 10,
+        "total_active": 9,
         "applied": 4,
         "pending_oa": 2,
         "active_interviews": 2,
@@ -324,10 +326,32 @@ def test_get_pipeline_metrics_query_logic(mock_db):
     empty_metrics = get_pipeline_metrics(mock_db)
     assert empty_metrics == {
         "total": 0,
+        "total_active": 0,
         "applied": 0,
         "pending_oa": 0,
         "active_interviews": 0,
         "offers": 0,
         "rejected": 0,
     }
+
+
+def test_get_worker_status(client, mock_db):
+    """GET /api/worker/status returns worker active state and sync metadata."""
+    mock_config = MagicMock()
+    mock_config.key = "last_checked_at"
+    mock_config.value = "2026-09-16T12:00:00+00:00"
+    mock_config.updated_at = datetime(2026, 9, 17, 8, 0, tzinfo=timezone.utc)
+
+    # First query for WorkerConfig, second for PipelineEvent
+    mock_db.query.return_value.filter.return_value.first.side_effect = [mock_config, None]
+    mock_db.query.return_value.filter.return_value.scalar.return_value = 5
+
+    response = client.get("/api/worker/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["active"] is True
+    assert "Daily" in data["schedule"]
+    assert data["last_checked_boundary"] == "2026-09-16T12:00:00+00:00"
+    assert data["total_worker_events"] == 5
+
 

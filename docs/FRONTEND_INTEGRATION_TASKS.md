@@ -93,7 +93,7 @@ export async function updatePortalText(appId: string, raw_text: string) {
 
 ---
 
-### [ ] Task 1.2: Connect Kanban Dashboard (`src/routes/index.tsx`)
+### [x] Task 1.2: Connect Kanban Dashboard (`src/routes/index.tsx`)
 - **Replace Mock Data:** Replace imports of static `APPLICATIONS` and hardcoded `stats` array with dynamic state fetched via `fetchApplications()` and `fetchMetrics()`.
 - **Loading & Empty States:** Show skeleton cards (`components/ui/skeleton.tsx`) while loading.
 - **Card Click:** Wire clicking an `AppCard` to set the selected `Application` object in `active` state to open `DetailDrawer`.
@@ -101,7 +101,7 @@ export async function updatePortalText(appId: string, raw_text: string) {
 
 ---
 
-### [ ] Task 1.3: Connect New Application Drop (`src/routes/new-drop.tsx`)
+### [x] Task 1.3: Connect New Application Drop (`src/routes/new-drop.tsx`)
 - **Action Trigger:** On clicking "🚀 Parse & Tailor Resume":
   1. Set `loading = true`.
   2. Call `parseJD(jdText, selectedPlatform)`.
