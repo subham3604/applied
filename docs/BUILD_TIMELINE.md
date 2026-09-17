@@ -18,7 +18,7 @@
 |---|---|---|---|
 | **Phase 1: Foundation** | Days 1–7 | Infrastructure + Extraction + RAG | Paste a JD → get a grounded Markdown resume saved to DB via terminal |
 | **Phase 2: Agent & Worker** | Days 8–14 | Gmail filter + LangGraph + Entity Resolution + State Machine | Emails auto-process the DB with zero user action |
-| **Phase 3: UI, Eval & Deploy** | Days 15–21 | Streamlit UI + Eval Harness + DigitalOcean live | HTTPS production URL with portfolio metrics |
+| **Phase 3: UI, Eval & Deploy** | Days 15–21 | React UI (Vercel) + FastAPI + Eval Harness + Split Deploy | Live Vercel SPA + DigitalOcean API with portfolio metrics |
 
 ---
 
@@ -318,55 +318,54 @@
 
 ---
 
-### Day 15 — Streamlit UI: JD Drop & Pipeline Dashboard
+### Day 15 — FastAPI HTTP Layer & API Contract Alignment
 
 **Time estimate:** 4–5 hours
 
 **Tasks:**
-- [ ] Install `streamlit`
-- [ ] Write `app.py` with two pages via `st.sidebar`:
-  - **Page 1 (New Application):** `st.text_area` for JD drop, "Parse & Tailor Resume" button, extracted metadata card
-  - **Page 2 (Pipeline Dashboard):** fetch all applications grouped by `current_status`, Kanban columns via `st.columns`
-- [ ] Each application card: company name, role, platform, applied date, status badge (colour-coded)
-- [ ] Test on mobile browser via local WiFi
+- [x] Write `web/main.py` exposing all 7 REST endpoints matching frontend requirements:
+  - `GET /api/metrics`, `GET /api/applications`, `GET /api/applications/{id}`
+  - `POST /api/applications/parse`, `PATCH /api/applications/{id}/resume`
+  - `PATCH /api/applications/{id}/status`, `POST /api/applications/{id}/text-update`
+- [x] Implement serializers matching frontend `relay-data.ts` TypeScript types (field names, enum mapping, deadline tone, computed priority)
+- [x] Configure CORS middleware for `http://localhost:5173`, `http://localhost:3000`, and Vercel preview domains
+- [x] Update `PipelineResult` in `pipeline.py` to return `location` and `source_platform`
+- [ ] Create `src/lib/api.ts` in frontend repo (`pixel-perfect-render-1659`) with typed fetch helpers
 
-**Deliverable check:** Paste a real JD from phone → extracted metadata on screen within 3 seconds.
-
----
-
-### Day 16 — Resume Snapshot Viewer + Editable Textarea
-
-**Time estimate:** 3–4 hours
-
-**Tasks:**
-- [ ] After extraction on Page 1: display resume in `st.text_area(value=generated_md, height=400)`
-- [ ] `st.expander("Preview rendered resume") → st.markdown(edited_md)`
-- [ ] Show diff indicator if user edits textarea from original: "⚠️ Modified from AI-generated version"
-- [ ] "Confirm & Save" button → saves application + snapshot (`is_user_edited=TRUE` if modified)
-
-**Deliverable check:** Edit one bullet → save → DB shows `is_user_edited = TRUE` with edited content.
+**Deliverable check:** `curl http://localhost:8000/api/applications` and `curl http://localhost:8000/api/metrics` return clean JSON matching frontend TypeScript interfaces.
 
 ---
 
-### Day 17 — Application Detail Card + All Update Controls
+### Day 16 — React UI: Wire Kanban Dashboard & New Drop Route
 
 **Time estimate:** 4 hours
 
 **Tasks:**
-- [ ] Clickable application cards on dashboard (use `st.session_state` for selected card)
-- [ ] Detail view renders:
-  - Company, role, platform, tech stack chips
-  - Stage history timeline (all `pipeline_events` rows, ordered by `created_at`, with source badge: AI / Manual / Override)
-  - Linked resume snapshot in `st.expander`
-  - **Stage Update Drop:** text area + "Process Update" button (CUJ-3, `MANUAL_DROP`)
-  - **Direct Status Override:** `st.selectbox` with valid next states + optional note + "Apply Override" button (`MANUAL_OVERRIDE`)
-  - **Force Override expander:** all states selectable — gated behind expander to prevent accidental use
-- [ ] **Ambiguous Match Resolution Widget:** if any `flag_for_manual` notifications exist, surface at top of dashboard:
-  - Show email subject + sender + first 300 chars of body
-  - Buttons: [Assign to Application X] [Assign to Application Y] [Create New] [Dismiss]
-- [ ] **Low-confidence match badge (⚠️):** applications matched by date proximity show warning on card with "Confirm or Reassign" control
+- [ ] Wire `src/routes/index.tsx` with dynamic state from `fetchApplications()` and `fetchMetrics()`
+- [ ] Connect search query input and stage filters ("All", "High Priority", "Active", "Archived") to live application state
+- [ ] Wire `src/routes/new-drop.tsx`:
+  - On "🚀 Parse & Tailor Resume" click: call `POST /api/applications/parse` with `{ jd_text, source_platform }`
+  - Populate extracted metadata card (company, role, stack, location) and pre-fill Markdown resume editor
+  - Show loading state and error toasts via `sonner`
+  - Wire "Confirm & Save to Pipeline" button: call `PATCH /api/applications/{id}/resume` if user made edits, then redirect to `/`
 
-**Deliverable check:** Phone-call interview → Direct Status Override → status updates. Ambiguous Swiggy email → widget appears → user assigns to correct application → pipeline_events logged.
+**Deliverable check:** Paste a real JD in React UI → metadata card and tailored Markdown resume appear on screen within 3s → confirm and card appears in "Applied" column.
+
+---
+
+### Day 17 — Detail Drawer Controls, Overrides & Verification
+
+**Time estimate:** 4 hours
+
+**Tasks:**
+- [ ] Wire card click on Kanban board to open `DetailDrawer.tsx` with full audit timeline from `pipeline_events`
+- [ ] Wire "Direct Status Override" dropdown + note input to `PATCH /api/applications/{id}/status` (`MANUAL_OVERRIDE`)
+- [ ] Wire "Paste Portal Snippet" textarea to `POST /api/applications/{id}/text-update` (`MANUAL_DROP`)
+- [ ] Wire "Copy Resume" button to clipboard via `navigator.clipboard.writeText`
+- [ ] Wire `AttentionBanner.tsx` for Ambiguous Email resolution
+- [ ] Run end-to-end local smoke tests for CUJ-1 (JD Drop), CUJ-3 (Portal Snippet), and CUJ-4 (Direct Override)
+
+**Deliverable check:** Status override updates stage instantly without page refresh. Timeline displays correct `🤖 Worker`, `👤 Manual`, and `⚡ Override` badges. Full end-to-end flow verified locally.
 
 ---
 
@@ -416,25 +415,37 @@
 
 ---
 
-### Day 20 — DigitalOcean Deploy + TLS + Smoke Test
+### Day 20 — Split Deployment: Vercel (Frontend) + DigitalOcean (Backend & Worker)
 
 **Time estimate:** 4–5 hours
 
 **Tasks:**
+- [ ] Deploy React frontend (`pixel-perfect-render-1659`) to Vercel:
+  - Connect GitHub repo
+  - Set project environment variable: `VITE_API_URL=https://api.yourdomain.com`
 - [ ] Create DigitalOcean Droplet: Ubuntu 24.04, 2GB RAM, BLR1
-- [ ] Point domain A record to Droplet IP
-- [ ] SSH in → install Docker → configure UFW (22, 80, 443)
-- [ ] `git clone` repo to `/opt/ai-job-tracker`
-- [ ] Create `.env` on server with all production credentials
-- [ ] Write `Caddyfile`: `tracker.yourdomain.com { reverse_proxy web:8501 }`
-- [ ] `docker compose up -d --build`
-- [ ] Smoke test on mobile: `https://tracker.yourdomain.com` loads with HTTPS
-- [ ] Paste real JD → verify extraction works on production
-- [ ] Watch `docker compose logs -f worker` — confirm Gmail OAuth succeeded at 08:00
+- [ ] Point DNS records:
+  - `relay.yourdomain.com` → Vercel CNAME
+  - `api.yourdomain.com` → Droplet IP (A record)
+- [ ] SSH into Droplet → install Docker → configure UFW (22, 80, 443)
+- [ ] `git clone` backend repo to `/opt/ai-job-tracker`
+- [ ] Create `.env` on server with production backend secrets (`POSTGRES_PASSWORD`, `DATABASE_URL`, `OPENAI_API_KEY`, `GMAIL_*`)
+- [ ] Write `Caddyfile`:
+  ```caddyfile
+  api.yourdomain.com {
+      reverse_proxy web:8000
+  }
+  ```
+- [ ] `docker compose up -d --build` (runs Caddy, FastAPI `web:8000`, PostgreSQL `pgvector`, and `worker`)
+- [ ] Smoke test on mobile:
+  - Open `https://relay.yourdomain.com`
+  - Paste real JD → verify extraction and tailoring work against live backend over HTTPS
+  - Test Direct Status Override on a card
+- [ ] Inspect logs: `docker compose logs -f web worker` — verify zero unhandled exceptions
 
-**Deliverable check:** App live on HTTPS on phone. Full end-to-end passes on production.
+**Deliverable check:** React SPA live on Vercel; FastAPI API and LangGraph worker live on DigitalOcean with automatic Let's Encrypt TLS. End-to-end user journeys pass in production.
 
-**Risk flag 🔴:** DNS propagation takes 5–30 minutes. Don't debug if domain doesn't resolve immediately — it's propagating.
+**Risk flag 🔴:** DNS propagation takes 5–30 minutes. Verify DNS resolution with `dig +short api.yourdomain.com` before debugging Caddy certificate issuance.
 
 ---
 
