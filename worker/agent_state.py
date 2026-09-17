@@ -82,9 +82,13 @@ class AgentState(TypedDict):
     is_new_application: bool
     candidate_apps: Optional[List[Any]]
 
-    # Node 4 & 5: State Machine & Commit
+    # Node 6 & 8: State Machine & Commit
+    current_status: Optional[str]
+    target_status: Optional[str]
+    transition_note: Optional[str]
     status_changed: bool
     committed: bool
+    db_session: Optional[Any]
 
     # Error Handling & Dead Letter Logging
     dead_letter_reason: Optional[str]

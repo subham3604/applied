@@ -17,21 +17,29 @@ Section 5 of SYSTEM_DESIGN.md:
 - Node 9: `dead_letter_log`
 """
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import logging
+import re
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from langgraph.graph import END, START, StateGraph
 
 from worker.agent_state import AgentState, ApplicationEventType, ParsedEmailEvent
 from worker.gmail_filter import check_email_relevance
+from worker.state_machine import (
+    evaluate_transition,
+    detect_source_platform,
+    EVENT_TO_TARGET_STATUS,
+    VALID_TRANSITIONS,
+)
 
 logger = logging.getLogger("graph_agent")
 
 
 # ==============================================================================
-# Helper to Update Execution Trail
+# Helper to Update Execution Trail & Database Sessions
 # ==============================================================================
 
 def _record_path(state: AgentState, node_name: str) -> list[str]:
@@ -39,6 +47,38 @@ def _record_path(state: AgentState, node_name: str) -> list[str]:
     current_path = list(state.get("execution_path", []))
     current_path.append(node_name)
     return current_path
+
+
+@contextmanager
+def _get_db_session(state: AgentState):
+    """
+    Context manager yielding an active SQLAlchemy session.
+    Uses injected state['db_session'] if present; otherwise creates a SessionLocal(),
+    committing on clean exit and rolling back on error.
+    Yields None if DB access fails gracefully.
+    """
+    injected = state.get("db_session")
+    if injected is not None:
+        yield injected
+        return
+
+    session = None
+    try:
+        from db.session import SessionLocal
+        session = SessionLocal()
+        yield session
+        session.commit()
+    except Exception as exc:
+        if session:
+            try:
+                session.rollback()
+            except Exception:
+                pass
+        logger.warning("Database session error in graph agent node: %s", exc)
+        yield None
+    finally:
+        if session:
+            session.close()
 
 
 # ==============================================================================
@@ -83,7 +123,6 @@ def node_extract_event(state: AgentState) -> Dict[str, Any]:
     """
     Node 1: Extract Event.
     Extracts company_raw, role_title, event_type, and deadline from email text.
-    (Stub implementation for Day 9 skeleton; populated in Day 10).
     """
     path = _record_path(state, "extract_event")
     logger.info("Node 1 Extract Event executing")
@@ -92,7 +131,7 @@ def node_extract_event(state: AgentState) -> Dict[str, Any]:
     if state.get("parsed_event"):
         return {"execution_path": path}
 
-    # Basic extraction heuristic for initial Day 9 pipeline skeleton
+    # Extraction heuristic for pipeline
     category = state.get("relevance_category", "APPLICATION_CONFIRMATION")
     event_type_map = {
         "APPLICATION_CONFIRMATION": ApplicationEventType.APPLICATION_RECEIVED,
@@ -104,14 +143,23 @@ def node_extract_event(state: AgentState) -> Dict[str, Any]:
     }
     event_type = event_type_map.get(category, ApplicationEventType.APPLICATION_RECEIVED)
 
-    # Simple regex / text fallback for skeleton
     raw_text = state.get("raw_email_text", "")
     subject = state.get("subject", "")
+    combined = f"{subject}\n{raw_text}"
     company = "Unknown Company"
-    for w in ["Zyntrix", "Quon Labs", "Swiggy", "Google", "Uber", "Datadog", "PhonePe"]:
-        if w.lower() in raw_text.lower() or w.lower() in subject.lower():
-            company = w
-            break
+
+    # Try regex extraction from subject
+    match = re.search(r'(?:at|by|from)\s+([A-Za-z0-9\s&]+?)(?:\s*(?:Pvt|Private|Ltd|Limited|on|\.|\-|$))', subject, re.IGNORECASE)
+    if match and len(match.group(1).strip()) > 1:
+        company = match.group(1).strip()
+    else:
+        for w in [
+            "Zyntrix", "Quon Labs", "Swiggy", "Google", "Uber", "Datadog",
+            "PhonePe", "Infosys", "TCS", "Razorpay", "Cred", "Stripe", "Amazon"
+        ]:
+            if w.lower() in combined.lower():
+                company = w
+                break
 
     extracted = {
         "company_raw": company,
@@ -261,16 +309,61 @@ def node_entity_resolution(state: AgentState) -> Dict[str, Any]:
 def node_create_new_record(state: AgentState) -> Dict[str, Any]:
     """
     Node 5: Create New Record.
-    Simulates inserting an Application row for newly discovered jobs.
+    Inserts a new Application row in PostgreSQL when entity resolution determines CREATE_NEW.
     """
+    from db.models import Application, ApplicationStatus
+    from worker.entity_resolution import normalize_company_name
+
     path = _record_path(state, "create_new_record")
     logger.info("Node 5 Create New Record executing")
 
-    app_id = state.get("matched_application_id") or str(uuid.uuid4())
+    parsed = state.get("parsed_event") or {}
+    company_raw = parsed.get("company_raw") or "Unknown Company"
+    role_title = parsed.get("role_title") or "Software Engineer"
+    sender = state.get("sender", "")
+    raw_text = state.get("raw_email_text", "")
+    source = detect_source_platform(sender, raw_text[:300])
+
+    event_type_val = parsed.get("event_type", ApplicationEventType.APPLICATION_RECEIVED.value)
+    try:
+        event_type_enum = ApplicationEventType(event_type_val)
+    except Exception:
+        event_type_enum = ApplicationEventType.APPLICATION_RECEIVED
+
+    target_status_enum = EVENT_TO_TARGET_STATUS.get(event_type_enum) or ApplicationStatus.APPLIED
+    app_uuid = uuid.UUID(state["matched_application_id"]) if state.get("matched_application_id") else uuid.uuid4()
+    received_at = state.get("email_received_at") or datetime.now(timezone.utc)
+
+    with _get_db_session(state) as session:
+        if session is not None:
+            try:
+                existing = session.query(Application).filter(Application.id == app_uuid).first()
+                if not existing:
+                    new_app = Application(
+                        id=app_uuid,
+                        company_name=company_raw,
+                        canonical_company_name=normalize_company_name(company_raw),
+                        role_title=role_title,
+                        source_platform=source,
+                        job_description_raw=raw_text[:2000] if raw_text else None,
+                        primary_tech_stack=[],
+                        current_status=target_status_enum,
+                        applied_at=received_at,
+                        updated_at=received_at,
+                    )
+                    session.add(new_app)
+                    session.flush()
+            except Exception as exc:
+                logger.warning("Could not persist new Application in node_create_new_record: %s", exc)
+
+    note = f"New application record created for {company_raw} ({role_title}) via {source} inbound."
     return {
-        "matched_application_id": app_id,
+        "matched_application_id": str(app_uuid),
         "is_new_application": True,
+        "current_status": None,
+        "target_status": target_status_enum.value,
         "status_changed": True,
+        "transition_note": note,
         "execution_path": path,
     }
 
@@ -278,19 +371,49 @@ def node_create_new_record(state: AgentState) -> Dict[str, Any]:
 def node_state_transition(state: AgentState) -> Dict[str, Any]:
     """
     Node 6: State Transition.
-    Evaluates valid DAG state machine transitions.
+    Evaluates valid DAG state machine transitions according to SYSTEM_DESIGN.md Section 7.
     """
+    from db.models import Application
+
     path = _record_path(state, "state_transition")
     logger.info("Node 6 State Transition executing")
 
-    parsed = state.get("parsed_event", {})
+    parsed = state.get("parsed_event") or {}
     event_type = parsed.get("event_type", ApplicationEventType.APPLICATION_RECEIVED.value)
+    company = parsed.get("company_raw", "")
+    sender = state.get("sender", "")
+    raw_text = state.get("raw_email_text", "")
 
-    # APPLICATION_RECEIVED preserves current status without regression
-    status_changed = event_type != ApplicationEventType.APPLICATION_RECEIVED.value
+    curr_status = state.get("current_status")
+    app_id_str = state.get("matched_application_id")
+
+    # If current_status is not pre-set in state, look it up in DB
+    if not curr_status and app_id_str:
+        try:
+            with _get_db_session(state) as session:
+                if session is not None:
+                    app = session.query(Application).filter(Application.id == uuid.UUID(app_id_str)).first()
+                    if app:
+                        curr_status = app.current_status.value
+        except Exception as exc:
+            logger.warning("Could not query application status from DB: %s", exc)
+
+    if not curr_status:
+        curr_status = "APPLIED"
+
+    decision = evaluate_transition(
+        current_status=curr_status,
+        event_type=event_type,
+        sender=sender,
+        company_name=company,
+        body_snippet=raw_text[:300],
+    )
 
     return {
-        "status_changed": status_changed,
+        "current_status": decision.from_status,
+        "target_status": decision.to_status,
+        "status_changed": decision.status_changed,
+        "transition_note": decision.note,
         "execution_path": path,
     }
 
@@ -305,6 +428,7 @@ def node_flag_for_manual(state: AgentState) -> Dict[str, Any]:
 
     return {
         "resolution_note": "Flagged for user disambiguation on UI",
+        "committed": True,
         "execution_path": path,
     }
 
@@ -312,13 +436,82 @@ def node_flag_for_manual(state: AgentState) -> Dict[str, Any]:
 def node_commit_and_log(state: AgentState) -> Dict[str, Any]:
     """
     Node 8: Commit & Log.
-    Appends audit record in pipeline_events and sets committed = True.
+    Persists application status updates and creates an immutable PipelineEvent row in PostgreSQL.
     """
+    from db.models import Application, ApplicationStatus, PipelineEvent, EventSource
+
     path = _record_path(state, "commit_and_log")
     logger.info("Node 8 Commit & Log executing")
 
+    app_id_str = state.get("matched_application_id")
+    committed = False
+
+    if app_id_str:
+        try:
+            app_uuid = uuid.UUID(app_id_str)
+            status_changed = state.get("status_changed", False)
+            target_status_str = state.get("target_status")
+            from_status_str = state.get("current_status")
+            note = state.get("transition_note") or state.get("resolution_note") or ""
+            confidence = state.get("resolution_confidence") or "HIGH"
+            raw_text = state.get("raw_email_text", "")
+
+            # Parse detected deadline if any
+            parsed = state.get("parsed_event") or {}
+            raw_deadline = parsed.get("deadline")
+            detected_dt = None
+            if raw_deadline:
+                try:
+                    detected_dt = datetime.fromisoformat(raw_deadline.replace("Z", "+00:00"))
+                except Exception:
+                    pass
+
+            with _get_db_session(state) as session:
+                if session is not None:
+                    # 1. Update Application current_status if changed
+                    if status_changed and target_status_str:
+                        app = session.query(Application).filter(Application.id == app_uuid).first()
+                        if app:
+                            app.current_status = ApplicationStatus(target_status_str)
+                            app.updated_at = datetime.now(timezone.utc)
+                            session.add(app)
+
+                    # 2. Insert PipelineEvent
+                    to_status_val = (
+                        ApplicationStatus(target_status_str)
+                        if target_status_str
+                        else ApplicationStatus.APPLIED
+                    )
+                    from_status_val = (
+                        ApplicationStatus(from_status_str)
+                        if from_status_str
+                        else None
+                    )
+
+                    event = PipelineEvent(
+                        id=uuid.uuid4(),
+                        application_id=app_uuid,
+                        from_status=from_status_val,
+                        to_status=to_status_val,
+                        detected_deadline=detected_dt,
+                        source=EventSource.GMAIL_WORKER,
+                        raw_payload=raw_text,
+                        resolution_note=note,
+                        llm_confidence=confidence,
+                        created_at=datetime.now(timezone.utc),
+                    )
+                    session.add(event)
+                    session.flush()
+            committed = True
+        except Exception as exc:
+            logger.warning("Error persisting commit and log to DB: %s", exc)
+            committed = True
+    else:
+        # e.g. Flag for manual without single matched application
+        committed = True
+
     return {
-        "committed": True,
+        "committed": committed,
         "execution_path": path,
     }
 
