@@ -136,3 +136,26 @@ class ExtractionResult(BaseModel):
     retry_count: int = 0
     circuit_broken: bool = False
 
+
+class JobEvent(BaseModel):
+    """
+    Structured career pipeline event parsed from candidate-pasted status update text.
+    """
+    event_type: str = Field(
+        ...,
+        description="Type of pipeline event: OA_RECEIVED, INTERVIEW_INVITE, OFFER, REJECTED, APPLICATION_RECEIVED, or STATUS_UPDATE."
+    )
+    detected_deadline: Optional[str] = Field(
+        default=None,
+        description="ISO 8601 formatted date/time string if a deadline or event time is detected."
+    )
+    confidence: str = Field(
+        default="HIGH",
+        description="Confidence level of classification ('HIGH', 'MEDIUM', 'LOW')."
+    )
+    notes: Optional[str] = Field(
+        default=None,
+        description="Summary or details extracted from update text."
+    )
+
+
