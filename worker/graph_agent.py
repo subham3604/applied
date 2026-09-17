@@ -18,7 +18,7 @@ Section 5 of SYSTEM_DESIGN.md:
 """
 
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 import re
 import uuid
@@ -36,6 +36,27 @@ from worker.state_machine import (
 )
 
 logger = logging.getLogger("graph_agent")
+
+
+def _parse_deadline_datetime(raw_val: Optional[str], default_tz=timezone.utc) -> Optional[datetime]:
+    """Helper to parse an ISO or human deadline string into a timezone-aware datetime."""
+    if not raw_val:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw_val.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=default_tz)
+        return dt
+    except Exception:
+        pass
+    try:
+        import dateutil.parser
+        dt = dateutil.parser.parse(raw_val, fuzzy=True)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=default_tz)
+        return dt
+    except Exception:
+        return None
 
 
 # ==============================================================================
@@ -148,24 +169,67 @@ def node_extract_event(state: AgentState) -> Dict[str, Any]:
     combined = f"{subject}\n{raw_text}"
     company = "Unknown Company"
 
-    # Try regex extraction from subject
-    match = re.search(r'(?:at|by|from)\s+([A-Za-z0-9\s&]+?)(?:\s*(?:Pvt|Private|Ltd|Limited|on|\.|\-|$))', subject, re.IGNORECASE)
-    if match and len(match.group(1).strip()) > 1:
-        company = match.group(1).strip()
-    else:
-        for w in [
-            "Zyntrix", "Quon Labs", "Swiggy", "Google", "Uber", "Datadog",
-            "PhonePe", "Infosys", "TCS", "Razorpay", "Cred", "Stripe", "Amazon"
-        ]:
-            if w.lower() in combined.lower():
-                company = w
-                break
+    # 1. Check known tech brands in subject/body first
+    for w in [
+        "Zyntrix", "Quon Labs", "Swiggy", "Google", "Uber", "Datadog",
+        "PhonePe", "Infosys", "TCS", "Razorpay", "Cred", "Stripe", "Amazon"
+    ]:
+        if re.search(rf'\b{re.escape(w)}\b', combined, re.IGNORECASE):
+            company = w
+            break
+
+    # 2. If not found in known brands, try preposition regex from subject
+    if company == "Unknown Company":
+        match = re.search(
+            r'(?:applying to|applied to|welcome to|offer from|interview with|invite from|at|by|from|with)\s+'
+            r'([A-Za-z0-9\s&]+?)(?:\s*(?:Pvt|Private|Ltd|Limited|for|on|\.|\-|$))',
+            subject,
+            re.IGNORECASE,
+        )
+        if match and len(match.group(1).strip()) > 1:
+            cand_name = match.group(1).strip()
+            if not any(bad in cand_name.lower() for bad in ("interview", "assessment", "application", "invitation", "opportunity", "update")):
+                company = cand_name
+
+    # 3. Fallback to sender domain if company still unknown
+    sender = state.get("sender", "")
+    if company == "Unknown Company" and "@" in sender:
+        domain_match = re.search(r'@(?:careers\.|jobs\.|talent\.|recruiting\.|hr\.)?([A-Za-z0-9\-]+)\.', sender)
+        if domain_match:
+            dom = domain_match.group(1).lower()
+            if dom not in ("gmail", "yahoo", "outlook", "hotmail", "greenhouse", "lever", "workday", "smartrecruiters"):
+                company = dom.capitalize()
+
+    # Extract due date and time for OA and Interviews
+    deadline = None
+    if event_type in (ApplicationEventType.OA_RECEIVED, ApplicationEventType.INTERVIEW_INVITE):
+        email_time = state.get("email_received_at") or datetime.now(timezone.utc)
+        rel_hrs = re.search(r'\b(?:within|valid for|expires in|complete in|complete within|take within)\s+(\d+)\s*(?:hours?|hrs?)\b', combined, re.IGNORECASE)
+        if rel_hrs:
+            hrs = int(rel_hrs.group(1))
+            deadline = (email_time + timedelta(hours=hrs)).isoformat()
+        else:
+            rel_days = re.search(r'\b(?:within|in|valid for)\s+(\d+)\s*days?\b', combined, re.IGNORECASE)
+            if rel_days:
+                days = int(rel_days.group(1))
+                deadline = (email_time + timedelta(days=days)).isoformat()
+            else:
+                date_pattern = re.search(
+                    r'\b(?:due by|due on|due date:?|deadline:?|expires on|expires:?|until|before|by|on|at)\s+'
+                    r'([A-Za-z0-9\s,:]+?(?:[0-9]{4}|[0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?))\b',
+                    combined,
+                    re.IGNORECASE,
+                )
+                if date_pattern:
+                    date_str = date_pattern.group(1).strip()
+                    parsed_dt = _parse_deadline_datetime(date_str)
+                    deadline = parsed_dt.isoformat() if parsed_dt else date_str
 
     extracted = {
         "company_raw": company,
         "role_title": None,
         "event_type": event_type.value,
-        "deadline": None,
+        "deadline": deadline,
     }
 
     return {
@@ -459,12 +523,7 @@ def node_commit_and_log(state: AgentState) -> Dict[str, Any]:
             # Parse detected deadline if any
             parsed = state.get("parsed_event") or {}
             raw_deadline = parsed.get("deadline")
-            detected_dt = None
-            if raw_deadline:
-                try:
-                    detected_dt = datetime.fromisoformat(raw_deadline.replace("Z", "+00:00"))
-                except Exception:
-                    pass
+            detected_dt = _parse_deadline_datetime(raw_deadline) if raw_deadline else None
 
             with _get_db_session(state) as session:
                 if session is not None:
