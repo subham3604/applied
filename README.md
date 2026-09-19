@@ -40,25 +40,25 @@ Modern job searches suffer from compounding structural friction:
 
 ```mermaid
 flowchart TD
-    Client["Candidate Browser (React 19 + TanStack)"]
-    Caddy["Caddy 2 Reverse Proxy (TLS / Ingress)"]
-    FastAPI["FastAPI Backend Server (Render)"]
-    Worker["Autonomous Triage Worker (APScheduler)"]
-    Gmail["Google Gmail API (OAuth2)"]
+    Client["Candidate Browser - React 19 + TanStack"]
+    Caddy["Caddy 2 Reverse Proxy - TLS / Ingress"]
+    FastAPI["FastAPI Backend Server - Render"]
+    Worker["Autonomous Triage Worker - APScheduler"]
+    Gmail["Google Gmail API - OAuth2"]
     DB[("Supabase PostgreSQL 16 + pgvector")]
-    OpenAI["OpenAI API (gpt-4o-mini + Embeddings)"]
+    OpenAI["OpenAI API - gpt-4o-mini + Embeddings"]
 
     Client -->|HTTPS REST| Caddy
-    Caddy -->|Proxy :8000| FastAPI
+    Caddy -->|Proxy Port 8000| FastAPI
     
-    Gmail -->|Periodic Polling (15m)| Worker
-    Worker -->|1. Regex Pre-Filter| Worker
-    Worker -->|2. LangGraph 4-Node DAG| OpenAI
-    Worker -->|3. Persist State Changes| DB
+    Gmail -->|Periodic Polling Every 15m| Worker
+    Worker -->|Tier-1 Regex Pre-Filter| Worker
+    Worker -->|LangGraph 4-Node DAG| OpenAI
+    Worker -->|Persist State Changes| DB
 
-    FastAPI -->|Extract JD & Match Bullets| OpenAI
-    FastAPI -->|Cosine Semantic Search (1536-d)| DB
-    FastAPI -->|Audit Events & Application CRUD| DB
+    FastAPI -->|Extract JD and Match Bullets| OpenAI
+    FastAPI -->|Cosine Semantic Search 1536d| DB
+    FastAPI -->|Audit Events and Application CRUD| DB
     FastAPI -->|Realtime Updates| Client
 ```
 
@@ -118,27 +118,27 @@ The benchmark incorporates authentic correspondence from Workday, Greenhouse, Le
 
 ```mermaid
 flowchart TD
-    Start(["Inbound Email Harvested"]) --> Regex{"Tier-1 Regex Pre-Filter"}
+    Start["Inbound Email Harvested"] --> Regex{"Tier-1 Regex Pre-Filter"}
     
-    Regex -->|Non-Recruitment / Noise| Dropped(["Dropped (Zero LLM Cost)"])
+    Regex -->|Non-Recruitment or Noise| Dropped["Dropped - Zero LLM Cost"]
     Regex -->|Recruitment Correspondence| LangGraph
 
     subgraph LangGraph ["LangGraph 4-Node Classification Engine"]
         direction TB
-        Node1["1. Parse Email (Instructor + CoT)"]
-        Node2["2. Entity Resolution (5-Tier)"]
-        Node3["3. Proximity & Canonical Matching"]
+        Node1["1. Parse Email with Instructor CoT"]
+        Node2["2. Entity Resolution 5-Tier"]
+        Node3["3. Proximity and Canonical Matching"]
         Node4{"4. Invariant Transition Check"}
 
         Node1 --> Node2 --> Node3 --> Node4
     end
 
-    Node4 -->|Valid Forward Stage| StateAdvanced["Update Application (APPLIED ➔ OA ➔ INTERVIEW ➔ OFFER)"]
-    Node4 -->|Ambiguous / Missing Context| Attention["Flag in Attention Required Queue"]
+    Node4 -->|Valid Forward Stage| StateAdvanced["Advance Stage: APPLIED to OA to INTERVIEW to OFFER"]
+    Node4 -->|Ambiguous Match| Attention["Flag in Attention Required Queue"]
     Node4 -->|Backward Regression| Blocked["Block Regressive Transition"]
 
     StateAdvanced --> Audit[("Persist Audit Event to PostgreSQL")]
-    Attention --> HumanReview(["Human-in-the-Loop Override via UI"])
+    Attention --> HumanReview["Human-in-the-Loop Override via UI"]
     Blocked --> Audit
 ```
 
