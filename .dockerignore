@@ -1,0 +1,33 @@
+# Version control
+.git
+.gitignore
+
+# Python virtual environment & cache
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Monorepo Frontend (hosted separately on Vercel)
+frontend/
+node_modules/
+
+# Local data & logs
+*.log
+*.sqlite3
+*.db
+postgres_data/
+caddy_data/
+caddy_config/
+
+# Documentation & IDE
+docs/
+.idea/
+.vscode/
+.DS_Store
+.streamlit/

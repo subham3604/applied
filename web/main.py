@@ -16,6 +16,7 @@ Endpoints:
 All response shapes match the TypeScript types in src/lib/relay-data.ts exactly.
 """
 
+import os
 import re
 import uuid
 from datetime import datetime, timezone
@@ -44,14 +45,20 @@ app = FastAPI(
     version="1.0.0",
 )
 
+cors_origins_env = os.getenv("CORS_ORIGINS", "")
+allowed_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "https://relay.vercel.app",
+]
+if cors_origins_env:
+    allowed_origins.extend([o.strip() for o in cors_origins_env.split(",") if o.strip()])
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "https://relay.vercel.app",
-        # Add your custom Vercel production domain here once configured
-    ],
+    allow_origins=allowed_origins,
+    allow_origin_regex=r"^https:\/\/.*\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
