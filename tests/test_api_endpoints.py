@@ -355,3 +355,42 @@ def test_get_worker_status(client, mock_db):
     assert data["total_worker_events"] == 5
 
 
+def test_deadline_cleared_on_status_override_to_new_stage(client, mock_db, sample_application):
+    """
+    Verifies that when an application transitions to a new stage (e.g. OA -> INTERVIEW),
+    the deadline from the previous stage is cleared and not displayed on the new stage.
+    """
+    sample_application.current_status = ApplicationStatus.INTERVIEW_ROUND
+
+    # Two events: 1st is OA_PENDING with a deadline, 2nd is MANUAL_OVERRIDE to INTERVIEW_ROUND without deadline
+    oa_event = PipelineEvent(
+        id=uuid.uuid4(),
+        application_id=sample_application.id,
+        to_status=ApplicationStatus.OA_PENDING,
+        detected_deadline=datetime(2026, 9, 25, 14, 0, tzinfo=timezone.utc),
+        source=EventSource.GMAIL_WORKER,
+        raw_payload="OA Invite",
+        created_at=datetime(2026, 9, 16, 10, 0, tzinfo=timezone.utc),
+    )
+    override_event = PipelineEvent(
+        id=uuid.uuid4(),
+        application_id=sample_application.id,
+        from_status=ApplicationStatus.OA_PENDING,
+        to_status=ApplicationStatus.INTERVIEW_ROUND,
+        detected_deadline=None,
+        source=EventSource.MANUAL_OVERRIDE,
+        raw_payload="Override note",
+        created_at=datetime(2026, 9, 18, 10, 0, tzinfo=timezone.utc),
+    )
+    sample_application.pipeline_events = [oa_event, override_event]
+
+    mock_db.query.return_value.options.return_value.filter.return_value.first.return_value = sample_application
+
+    response = client.get(f"/api/applications/{sample_application.id}")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["stage"] == "interview"
+    assert data["deadline"] is None
+
+
+

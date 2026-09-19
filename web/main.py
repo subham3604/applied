@@ -27,10 +27,11 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
-from db.models import Application, ApplicationStatus, EventSource, PipelineEvent, ResumeSnapshot, WorkerConfig
+from db.models import Application, ApplicationStatus, EventSource, MasterExperienceVault, PipelineEvent, ResumeSnapshot, WorkerConfig
 from db.session import SessionLocal
 from web.queries import get_pipeline_metrics
 from web.services.pipeline import PipelineResult, process_raw_jd
+from web.services.rag_engine import embed_text
 from web.services.state_controller import apply_manual_override, apply_manual_update
 
 # ==============================================================================
@@ -213,17 +214,22 @@ def _serialize_application(
 
     Every field name and value maps 1:1 to what the TypeScript type expects.
     """
-    # ── Deadline: latest pipeline_event with a detected_deadline
+    # ── Deadline: latest pipeline_event with a detected_deadline within the CURRENT stage
     deadline_text = None
     deadline_tone = None
-    sorted_events = sorted(
-        app.pipeline_events or [], key=lambda e: e.created_at, reverse=True
-    )
-    for ev in sorted_events:
-        if ev.detected_deadline:
-            deadline_text, deadline_tone = _deadline_display(ev.detected_deadline)
-            if deadline_text:
+    if app.current_status not in (ApplicationStatus.REJECTED, ApplicationStatus.WITHDRAWN):
+        sorted_events = sorted(
+            app.pipeline_events or [], key=lambda e: e.created_at, reverse=True
+        )
+        for ev in sorted_events:
+            # If we cross an event boundary into a prior status/stage,
+            # deadlines belonging to that earlier stage are obsolete and resolved.
+            if ev.to_status != app.current_status:
                 break
+            if ev.detected_deadline:
+                deadline_text, deadline_tone = _deadline_display(ev.detected_deadline)
+                if deadline_text:
+                    break
 
     # ── Priority: interview stage or danger-level deadline
     is_priority = (
@@ -488,6 +494,202 @@ def get_worker_status(db: Session = Depends(get_db)):
             or 0
         ),
     }
+
+
+# ==============================================================================
+# Master Experience Vault — CRUD & Dynamic Vector Embedding
+# ==============================================================================
+
+VAULT_CATEGORIES = ("WORK_EXPERIENCE", "PROJECT", "SKILL", "EDUCATION")
+
+
+class VaultBulletCreateRequest(BaseModel):
+    category: Literal["WORK_EXPERIENCE", "PROJECT", "SKILL", "EDUCATION"]
+    title: str
+    bullet_point: str
+    tech_tags: List[str] = []
+
+
+class VaultBulletUpdateRequest(BaseModel):
+    category: Optional[Literal["WORK_EXPERIENCE", "PROJECT", "SKILL", "EDUCATION"]] = None
+    title: Optional[str] = None
+    bullet_point: Optional[str] = None
+    tech_tags: Optional[List[str]] = None
+
+
+@app.get("/api/vault")
+def list_vault_bullets(
+    category: Optional[str] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Lists all master experience vault bullets with optional category and keyword search filtering.
+    """
+    query = db.query(MasterExperienceVault)
+    if category and category.upper() in VAULT_CATEGORIES:
+        query = query.filter(MasterExperienceVault.category == category.upper())
+
+    bullets = (
+        query.order_by(
+            MasterExperienceVault.category,
+            MasterExperienceVault.title,
+            MasterExperienceVault.created_at.desc(),
+        ).all()
+    )
+
+    if search and search.strip():
+        term = search.strip().lower()
+        bullets = [
+            b
+            for b in bullets
+            if term in b.title.lower()
+            or term in b.bullet_point.lower()
+            or any(term in tag.lower() for tag in (b.tech_tags or []))
+        ]
+
+    return [
+        {
+            "id": str(b.id),
+            "category": b.category,
+            "title": b.title,
+            "bullet_point": b.bullet_point,
+            "tech_tags": b.tech_tags or [],
+            "created_at": b.created_at.isoformat() if b.created_at else "",
+        }
+        for b in bullets
+    ]
+
+
+@app.post("/api/vault")
+def create_vault_bullet(
+    body: VaultBulletCreateRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Creates a new experience bullet in the vault, generating a 1536-dim vector embedding.
+    """
+    if not body.title.strip():
+        raise HTTPException(status_code=422, detail="Title cannot be empty.")
+    if not body.bullet_point.strip():
+        raise HTTPException(status_code=422, detail="Bullet point text cannot be empty.")
+
+    try:
+        embedding = embed_text(body.bullet_point.strip())
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to generate embedding: {str(exc)}"
+        )
+
+    bullet = MasterExperienceVault(
+        id=uuid.uuid4(),
+        category=body.category,
+        title=body.title.strip(),
+        bullet_point=body.bullet_point.strip(),
+        tech_tags=body.tech_tags,
+        embedding=embedding,
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(bullet)
+    db.commit()
+    db.refresh(bullet)
+
+    return {
+        "id": str(bullet.id),
+        "category": bullet.category,
+        "title": bullet.title,
+        "bullet_point": bullet.bullet_point,
+        "tech_tags": bullet.tech_tags or [],
+        "created_at": bullet.created_at.isoformat() if bullet.created_at else "",
+    }
+
+
+@app.patch("/api/vault/{id}")
+def update_vault_bullet(
+    id: str,
+    body: VaultBulletUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Updates an existing vault bullet. Recomputes embedding if bullet_point text changes.
+    """
+    try:
+        bullet_uuid = uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Invalid bullet ID format.")
+
+    bullet = (
+        db.query(MasterExperienceVault)
+        .filter(MasterExperienceVault.id == bullet_uuid)
+        .first()
+    )
+    if not bullet:
+        raise HTTPException(status_code=404, detail="Vault bullet not found.")
+
+    if body.title is not None:
+        if not body.title.strip():
+            raise HTTPException(status_code=422, detail="Title cannot be empty.")
+        bullet.title = body.title.strip()
+
+    if body.category is not None:
+        bullet.category = body.category
+
+    if body.tech_tags is not None:
+        bullet.tech_tags = body.tech_tags
+
+    if body.bullet_point is not None:
+        new_text = body.bullet_point.strip()
+        if not new_text:
+            raise HTTPException(
+                status_code=422, detail="Bullet point text cannot be empty."
+            )
+        if new_text != bullet.bullet_point:
+            bullet.bullet_point = new_text
+            try:
+                bullet.embedding = embed_text(new_text)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to recompute embedding: {str(exc)}",
+                )
+
+    db.commit()
+    db.refresh(bullet)
+
+    return {
+        "id": str(bullet.id),
+        "category": bullet.category,
+        "title": bullet.title,
+        "bullet_point": bullet.bullet_point,
+        "tech_tags": bullet.tech_tags or [],
+        "created_at": bullet.created_at.isoformat() if bullet.created_at else "",
+    }
+
+
+@app.delete("/api/vault/{id}")
+def delete_vault_bullet(
+    id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Deletes a bullet from the master experience vault.
+    """
+    try:
+        bullet_uuid = uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Invalid bullet ID format.")
+
+    bullet = (
+        db.query(MasterExperienceVault)
+        .filter(MasterExperienceVault.id == bullet_uuid)
+        .first()
+    )
+    if not bullet:
+        raise HTTPException(status_code=404, detail="Vault bullet not found.")
+
+    db.delete(bullet)
+    db.commit()
+    return {"success": True, "deleted_id": str(bullet_uuid)}
 
 
 # ==============================================================================
