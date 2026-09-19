@@ -39,7 +39,7 @@ cp .env.example .env
 
 ### Option A: Complete Docker Compose Stack (*Recommended*)
 
-Runs the entire production stack (FastAPI Backend, Background Worker, PostgreSQL `pgvector`, and Caddy reverse proxy) with one command:
+Runs the local container stack (FastAPI Backend, Background Worker, and PostgreSQL `pgvector`) with one command:
 
 ```bash
 # Build and launch all services
@@ -49,7 +49,6 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-* **Frontend / Proxy:** `http://localhost`
 * **FastAPI Docs:** `http://localhost:8000/docs`
 * **PostgreSQL:** `localhost:5433`
 

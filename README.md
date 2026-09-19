@@ -31,25 +31,23 @@ Job applicants applying across multiple portals (Workday, Greenhouse, Lever, Tal
 
 ```mermaid
 graph TD
-    Client["Candidate Browser (React 19 + TanStack)"]
-    Caddy["Caddy 2 Reverse Proxy (TLS / Ingress)"]
+    Client["Candidate Browser (React 19 on Vercel)"]
     FastAPI["FastAPI Backend Server (Render)"]
-    Worker["Autonomous Triage Worker (APScheduler)"]
+    Worker["Autonomous Triage Worker (Daily Cron)"]
     Gmail["Google Gmail API (OAuth2)"]
     DB[("Supabase PostgreSQL 16 + pgvector")]
     OpenAI["OpenAI API (gpt-4o-mini + text-embedding-3-small)"]
 
-    Client -->|HTTPS REST| Caddy
-    Caddy -->|Proxy :8000| FastAPI
+    Client -->|HTTPS REST| FastAPI
     
-    Gmail -->|Periodic Polling (15m)| Worker
-    Worker -->|1. Regex Pre-Filter| Worker
-    Worker -->|2. LangGraph 4-Node DAG| OpenAI
-    Worker -->|3. Persist State Changes| DB
+    Gmail -->|Daily Ingestion| Worker
+    Worker -->|Tier-1 Regex Pre-Filter| Worker
+    Worker -->|Tier-2 LangGraph DAG| OpenAI
+    Worker -->|Persist State Changes| DB
 
-    FastAPI -->|Extract JD & Score Requirements| OpenAI
-    FastAPI -->|Cosine Similarity Search (1536-d)| DB
-    FastAPI -->|Audit Events & Application CRUD| DB
+    FastAPI -->|Extract JD and Score Requirements| OpenAI
+    FastAPI -->|Cosine Similarity Search| DB
+    FastAPI -->|Audit Events and CRUD| DB
     FastAPI <-->|Live Updates| Client
 ```
 
@@ -78,7 +76,7 @@ The user pastes a raw Job Description (JD) at `/new-drop`. The backend extracts 
 The matched bullet points are compiled into an immutable resume snapshot linked to the application ID, guaranteeing a permanent record of the exact claims submitted to that employer.
 
 ### 3. Inbound Recruiter Email Triage
-Every 15 minutes, the background worker polls the Gmail API for new messages. Messages pass a Tier-1 regex heuristic pre-filter, dropping promotional noise in under 5ms.
+Once a day, the background worker polls the Gmail API for new recruitment-related messages. Inbound emails pass a Tier-1 regex heuristic pre-filter, dropping promotional noise in under 5ms.
 
 ### 4. Classification & State Progression
 Relevant emails are parsed through a 4-node LangGraph state machine. When an online assessment or interview invitation is detected, the application automatically advances and logs an immutable audit event.
@@ -112,8 +110,8 @@ The extraction and classification engine was evaluated against a **73-sample rea
 | **AI & Agents** | LangGraph, LangChain, Instructor, OpenAI (`gpt-4o-mini`, `text-embedding-3-small`) |
 | **Database & Vectors** | PostgreSQL 16, `pgvector`, SQLAlchemy, Alembic |
 | **Frontend** | React 19, TanStack Start, TypeScript, Tailwind CSS |
-| **Worker & Automation** | APScheduler, Google Gmail API, OAuth2 |
-| **Infrastructure & DevOps**| Docker, Docker Compose, Caddy 2, Render, Vercel |
+| **Worker & Automation** | APScheduler (Daily Cron), Google Gmail API, OAuth2 |
+| **Infrastructure & Hosting**| Render (FastAPI Docker), Vercel (Edge CDN), Supabase (PostgreSQL 16) |
 | **Testing** | pytest, pytest-asyncio, HTTPX (141 automated tests) |
 
 ---
@@ -124,11 +122,12 @@ Interactive Swagger UI: **[applied-api.onrender.com/docs](https://applied-api.on
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/api/pipeline/single-drop` | `POST` | Ingests raw JD, matches vector bullets, and creates application |
-| `/api/applications` | `GET` | Lists all active applications with current stages and timelines |
-| `/api/applications/{id}/status` | `PATCH` | Manual status override for drag-and-drop Kanban updates |
-| `/api/vault` | `GET`, `POST` | View and insert verified career bullets with automated embeddings |
-| `/health` | `GET` | Health check endpoint for container probes |
+| `/api/applications/parse` | `POST` | Ingests raw JD text, extracts requirements, matches vector bullets, and saves application |
+| `/api/applications` | `GET` | Lists all active applications with stages, timelines, and metadata |
+| `/api/applications/{id}/status` | `PATCH` | Direct status override for drag-and-drop Kanban updates |
+| `/api/metrics` | `GET` | Stats bar metrics (total applications, active stage counts, response rates) |
+| `/api/vault` | `GET`, `POST` | Full CRUD for verified career bullets with automated vector embeddings |
+| `/health` | `GET` | Container and database health probe |
 
 > Full endpoint documentation and request/response payloads: [docs/api.md](docs/api.md)
 

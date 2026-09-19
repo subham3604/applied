@@ -16,29 +16,32 @@ The Applied backend exposes a high-concurrency async REST API built with **FastA
 
 ## 2. Core Endpoints
 
-### 2.1 Pipeline Processing (`/api/pipeline`)
+### 2.1 Job Description Ingestion & Tailoring (`/api/applications/parse`)
 
-#### `POST /api/pipeline/single-drop`
-Performs end-to-end processing of a raw job description: extracts core requirements, queries the Master Experience Vault using cosine similarity, validates claims, and creates a new application record in the `APPLIED` state.
+#### `POST /api/applications/parse`
+Parses raw job description text via LLM extraction, performs semantic vector retrieval against the Master Experience Vault (`pgvector`), generates a grounded tailored resume snapshot, and creates an application record.
 
 **Request Payload:**
 ```json
 {
-  "company_name": "Stripe",
-  "job_title": "Backend Software Engineer",
-  "job_description_raw": "We are seeking a backend engineer experienced in distributed systems, Java/Python, and PostgreSQL..."
+  "jd_text": "We are seeking a backend engineer experienced in distributed systems, Python/FastAPI, and PostgreSQL...",
+  "source_platform": "LinkedIn"
 }
 ```
 
 **Response Payload (200 OK):**
 ```json
 {
-  "application_id": 42,
-  "company_name": "Stripe",
-  "job_title": "Backend Software Engineer",
+  "success": true,
+  "application_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+  "company": "Stripe",
+  "role": "Backend Software Engineer",
+  "stack": ["Python", "FastAPI", "PostgreSQL"],
+  "location": "Remote",
   "current_stage": "APPLIED",
-  "matched_bullets_count": 4,
-  "hallucination_check": "PASSED"
+  "tailored_bullets": [
+    "Architected an event-driven Redis caching layer cutting API latency by 65%."
+  ]
 }
 ```
 

@@ -8,25 +8,23 @@ This document details the architectural blueprint, component interactions, deter
 
 ```mermaid
 graph TD
-    Client["Candidate Browser (React 19 + TanStack)"]
-    Caddy["Caddy 2 Reverse Proxy (TLS / Ingress)"]
+    Client["Candidate Browser (React 19 on Vercel)"]
     FastAPI["FastAPI Backend Server (Render Container)"]
-    Worker["Autonomous Triage Worker (APScheduler)"]
+    Worker["Autonomous Triage Worker (Daily Cron)"]
     Gmail["Google Gmail API (OAuth2)"]
     DB[("Supabase PostgreSQL 16 + pgvector")]
     OpenAI["OpenAI API (gpt-4o-mini + text-embedding-3-small)"]
 
-    Client -->|HTTPS REST| Caddy
-    Caddy -->|Proxy :8000| FastAPI
+    Client -->|HTTPS REST| FastAPI
     
-    Gmail -->|Periodic Polling (15m)| Worker
+    Gmail -->|Daily Ingestion| Worker
     Worker -->|Tier-1 Regex Pre-Filter| Worker
-    Worker -->|Tier-2 LangGraph 4-Node DAG| OpenAI
-    Worker -->|Persist State & Audit Events| DB
+    Worker -->|Tier-2 LangGraph DAG| OpenAI
+    Worker -->|Persist State and Audit Events| DB
 
-    FastAPI -->|Extract JD & Score Requirements| OpenAI
-    FastAPI -->|Cosine Similarity Search (1536-d)| DB
-    FastAPI -->|Application CRUD & Overrides| DB
+    FastAPI -->|Extract JD and Score Requirements| OpenAI
+    FastAPI -->|Cosine Similarity Search| DB
+    FastAPI -->|Application CRUD and Overrides| DB
     FastAPI <-->|Live Updates| Client
 ```
 
@@ -96,8 +94,8 @@ When a candidate drops a raw Job Description (JD):
 
 ---
 
-## 5. Security & Isolation Model
+## 5. Security & Transport Model
 
 * **Read-Only Scope Delegation:** The Gmail integration operates with scoped `gmail.readonly` permissions, preventing the application from sending, modifying, or deleting candidate emails.
 * **Zero PII Leakage:** Tailored resumes and vector queries only process candidate-provided technical claims stored in the local vault.
-* **Ingress Security:** Caddy 2 automatically provisions and renews Let's Encrypt TLS certificates, enforcing HTTP-to-HTTPS redirects and proxying traffic to internal Docker ports.
+* **Edge & Transport Security:** Vercel terminates TLS at the global edge network for the React frontend, while Render manages automated SSL certificates and secure container HTTPS termination for the FastAPI backend, guaranteeing encrypted transport across all boundaries.
