@@ -68,5 +68,5 @@ dist-ssr/
 .vinxi/
 .lovable/
 
-
-
+# Documentation & Internal Blueprints
+docs/
