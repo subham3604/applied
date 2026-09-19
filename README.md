@@ -39,14 +39,14 @@ Modern job searches suffer from compounding structural friction:
 ## System Architecture
 
 ```mermaid
-graph TD
+flowchart TD
     Client["Candidate Browser (React 19 + TanStack)"]
     Caddy["Caddy 2 Reverse Proxy (TLS / Ingress)"]
     FastAPI["FastAPI Backend Server (Render)"]
     Worker["Autonomous Triage Worker (APScheduler)"]
     Gmail["Google Gmail API (OAuth2)"]
     DB[("Supabase PostgreSQL 16 + pgvector")]
-    OpenAI["OpenAI API (gpt-4o-mini + text-embedding-3-small)"]
+    OpenAI["OpenAI API (gpt-4o-mini + Embeddings)"]
 
     Client -->|HTTPS REST| Caddy
     Caddy -->|Proxy :8000| FastAPI
@@ -59,7 +59,7 @@ graph TD
     FastAPI -->|Extract JD & Match Bullets| OpenAI
     FastAPI -->|Cosine Semantic Search (1536-d)| DB
     FastAPI -->|Audit Events & Application CRUD| DB
-    FastAPI <-->|Live Updates| Client
+    FastAPI -->|Realtime Updates| Client
 ```
 
 ---
@@ -117,35 +117,39 @@ The benchmark incorporates authentic correspondence from Workday, Greenhouse, Le
 ### 1. LangGraph State Machine Flow
 
 ```mermaid
-stateDiagram-v2
-    [*] --> InboundEmail: Polled via Gmail API
-    InboundEmail --> RegexFilter: Tier-1 Fast Pre-filter
-    RegexFilter --> Ignored: Spam / Non-recruitment
-    RegexFilter --> LangGraphDAG: Admitted Application Email
+flowchart TD
+    Start(["Inbound Email Harvested"]) --> Regex{"Tier-1 Regex Pre-Filter"}
     
-    state LangGraphDAG {
-        [*] --> ParseEmail: Instructor + CoT Reasoning
-        ParseEmail --> EntityResolution: 5-Tier Domain & Body Extraction
-        EntityResolution --> MatchApplication: Canonical Name + Proximity Matching
-        MatchApplication --> EvaluateTransition: Invariant & Monotonicity Check
-    }
-    
-    EvaluateTransition --> DirectStateUpdate: Valid Forward Transition
-    EvaluateTransition --> AttentionRequired: Low Confidence / Ambiguous Match
-    EvaluateTransition --> RejectTransition: Backward Regression Blocked
-    
-    DirectStateUpdate --> [*]: Audit Event Persisted
-    AttentionRequired --> [*]: Flagged for Human Review
-    RejectTransition --> [*]: State Preserved
+    Regex -->|Non-Recruitment / Noise| Dropped(["Dropped (Zero LLM Cost)"])
+    Regex -->|Recruitment Correspondence| LangGraph
+
+    subgraph LangGraph ["LangGraph 4-Node Classification Engine"]
+        direction TB
+        Node1["1. Parse Email (Instructor + CoT)"]
+        Node2["2. Entity Resolution (5-Tier)"]
+        Node3["3. Proximity & Canonical Matching"]
+        Node4{"4. Invariant Transition Check"}
+
+        Node1 --> Node2 --> Node3 --> Node4
+    end
+
+    Node4 -->|Valid Forward Stage| StateAdvanced["Update Application (APPLIED ➔ OA ➔ INTERVIEW ➔ OFFER)"]
+    Node4 -->|Ambiguous / Missing Context| Attention["Flag in Attention Required Queue"]
+    Node4 -->|Backward Regression| Blocked["Block Regressive Transition"]
+
+    StateAdvanced --> Audit[("Persist Audit Event to PostgreSQL")]
+    Attention --> HumanReview(["Human-in-the-Loop Override via UI"])
+    Blocked --> Audit
 ```
 
 ### 2. PostgreSQL Database Schema & Vector Indexes
 
 ```mermaid
 erDiagram
-    applications ||--o{ pipeline_events : "triggers"
-    applications ||--o{ resume_snapshots : "snapshots"
-    
+    applications ||--o{ pipeline_events : triggers
+    applications ||--o{ resume_snapshots : generates
+    applications ||--o{ master_experience_vault : references
+
     applications {
         uuid id PK
         string company_name
@@ -153,52 +157,39 @@ erDiagram
         string role_title
         string source_platform
         text job_description_raw
-        jsonb primary_tech_stack
-        numeric experience_required_yrs
-        string location
-        application_status current_status
-        timestamptz applied_at
-        timestamptz updated_at
+        string current_status
+        timestamp applied_at
+        timestamp updated_at
     }
-    
+
+    pipeline_events {
+        uuid id PK
+        uuid application_id FK
+        string from_status
+        string to_status
+        timestamp detected_deadline
+        string source
+        text raw_payload
+        string llm_confidence
+        timestamp created_at
+    }
+
+    resume_snapshots {
+        uuid id PK
+        uuid application_id FK
+        text markdown_content
+        boolean is_user_edited
+        boolean is_active
+        timestamp created_at
+        timestamp updated_at
+    }
+
     master_experience_vault {
         uuid id PK
         string category
         string title
         text bullet_point
-        jsonb tech_tags
-        vector_1536 embedding
-        timestamptz created_at
-    }
-    
-    pipeline_events {
-        uuid id PK
-        uuid application_id FK
-        application_status from_status
-        application_status to_status
-        timestamptz detected_deadline
-        event_source source
-        text raw_payload
-        text resolution_note
-        string llm_confidence
-        timestamptz created_at
-    }
-    
-    resume_snapshots {
-        uuid id PK
-        uuid application_id FK
-        text markdown_content
-        jsonb retrieved_vault_ids
-        boolean is_user_edited
-        boolean is_active
-        timestamptz created_at
-        timestamptz updated_at
-    }
-    
-    worker_config {
-        string key PK
-        text value
-        timestamptz updated_at
+        timestamp created_at
     }
 ```
 
