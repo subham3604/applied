@@ -69,4 +69,4 @@ dist-ssr/
 .lovable/
 
 # Documentation & Internal Blueprints
-docs/
+docs-local/
