@@ -1,0 +1,19 @@
+From: HackerRank <support@hackerrankforwork.com>
+To: candidate@gmail.com
+Subject: Invitation to take Swiggy SDE-II Online Coding Assessment
+Date: Mon, 14 Sep 2026 10:00:00 +0000
+
+Hi Subham,
+
+Thank you for applying to Swiggy. As the next step in our selection process, you have been invited to complete the Swiggy SDE-II Online Assessment powered by HackerRank.
+
+Assessment details:
+- Duration: 90 minutes
+- Format: 2 Data Structures & Algorithms coding challenges + 10 System Design MCQs
+- Test link: https://www.hackerrank.com/tests/swiggy-sde2-sep2026/login
+- Completion Deadline: September 22, 2026 at 11:59 PM IST
+
+Please ensure you complete the test in one sitting with an uninterrupted internet connection.
+
+Good luck,
+Swiggy Talent Team & HackerRank

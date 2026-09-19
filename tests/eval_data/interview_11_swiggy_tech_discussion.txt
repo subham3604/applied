@@ -1,0 +1,14 @@
+From: recruiting@bundltechnologies.com
+To: candidate@gmail.com
+Subject: Next steps regarding your application at Bundl Technologies (Swiggy)
+Date: Fri, 18 Sep 2026 16:45:00 +0530
+
+Hi candidate, thank you for your application to Bundl Technologies (Swiggy).
+
+We were impressed with your engineering background and would like to schedule a technical discussion regarding your candidacy for our platform engineering team.
+
+Please let us know your availability over Google Meet for early next week.
+
+Regards,
+Recruiting Team
+Bundl Technologies (Swiggy)

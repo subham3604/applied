@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Optional
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 load_dotenv()
 
@@ -62,35 +62,40 @@ BLOCKED_SENDERS = [
 
 RELEVANCE_GATE_PROMPT = """You are a precision filter for an autonomous job application tracking system.
 
-Your task is to analyze the email metadata and the initial content (up to 1,000 characters) and classify whether this email is definitive evidence that the candidate has ALREADY submitted a job application.
+Your task is to analyze the email metadata and the initial content (up to 1,000 characters) and classify whether this email is definitive evidence that the EMAIL RECIPIENT has an active, submitted job application event with an employer.
 
 DECISION CRITERIA:
 
 MARK AS RELEVANT (is_relevant: true):
 - Application receipt confirmations ("We have received your application", "Application Received", "Thank you for applying")
-- Application activity & recruiter engagement updates on submitted applications:
-  - "Your application was viewed by [Company]" (e.g. LinkedIn Easy Apply notification)
-  - "Recruiter viewed your application" or "Your application was downloaded" (e.g. Naukri, Indeed, ATS)
-  These are definitive signals that the candidate submitted an application and the employer is actively reviewing it.
-- Interview invitations for a role the candidate applied to (Screening, Technical, Behavioral, System Design)
+- Inbound employee referrals where an employer or recruiter reaches out to the recipient to interview based on an internal referral
+- Application activity & recruiter engagement updates on submitted applications ("Your application was viewed by [Company]", "Recruiter viewed your application")
+- Interview invitations for a job the recipient applied to or was referred for (Screening, Technical, Behavioral, System Design)
 - Online assessment / coding test invitations (HackerRank, HackerEarth, Mercer Mettl, Codility, etc.)
 - Rejection emails ("we've decided to move forward with other candidates", "we will keep your profile on file", "regret to inform")
-- Offer letters or compensation discussions
+- Offer letters or compensation discussions for employment (where the employer pays a salary to the recipient)
+- Offer rescinded or hiring freeze cancellation notices (these reflect an active application transition to rejected)
+- Assessment completion receipts (e.g. "You have completed your Codility test")
 - "Next steps" emails following a submitted application
-- Naukri "You applied for 1 job" emails IF the body contains a specific job title and company name
+- Actual job hiring emails FROM platforms like LeetCode or Scaler hiring for their own engineering teams (e.g. "Software Engineer at LeetCode")
 
 MARK AS NOT RELEVANT (is_relevant: false):
-- Emails inviting the candidate TO apply (candidate has not applied yet)
-- Job recommendation / matching digests ("this job is a match", "based on your profile", "jobs you might like")
-- Saved job reminders or alerts
-- Recruiter cold outreach / marketing
-- Naukri "You applied for N jobs" summary emails where the body is empty or contains only a count of multiple jobs
-- AmbitionBox review nudges or survey requests
-- OTP / security code / identity verification emails — these are sent WHILE filling out an application form before submission is confirmed. The presence of a short verification code (e.g., 'vQuSydKU', '595125') with instructions like "resubmit" or "expires in 10 minutes" is a definitive negative signal.
+- Commercial Course / Bootcamp / EdTech Sales: Offers or invitations from training programs, bootcamps, or course platforms (Scaler Academy, Simplilearn, UpGrad, LeetCode premium, Coursera) offering "scholarships", "fellowships", or course admission discounts where the candidate must pay tuition or fees. An employment offer MUST be from an employer paying a salary, NOT asking the candidate to pay a fee or enroll in a batch.
+- Outbound Referral Status Updates: Emails acknowledging a referral submitted BY the recipient FOR a colleague or friend ("Thank you for referring [Name]", "Your referral [Name] has applied", referral bonus tracking). The candidate being considered is a third party, NOT the recipient.
+- Candidate Experience / Post-Interview Surveys: Emails asking the recipient for feedback or satisfaction ratings about past interviews ("How was your interview experience?", "Candidate feedback survey", Qualtrics/SurveyMonkey forms). These do NOT schedule a new interview and do NOT change job application status.
+- Third-Party Interview Prep / Mock Tests: Newsletters or study guides offering mock interview simulations or practice questions (e.g. LeetCode prep newsletter).
+- Pre-Application Invitations: Emails inviting the candidate TO apply or complete an unfinished portal draft.
+- Recruiter Cold Outreach / Agency Pitch: Headhunters pitching unapplied roles with Calendly links.
+- Open Hackathons / Public Coding Contests: Open competitions not tied to a specific job requisition.
+- Event Cancellations / Webinars: Postponed tech sessions or webinars that use "regret" or "unfortunately".
+- OTP / Security Codes / Identity Verification emails.
+- Job alerts and recommendation digests.
 
 THE CORE PRINCIPLE:
-RELEVANT emails confirm something the candidate ALREADY DID.
-NOT RELEVANT emails ask the candidate to DO something (apply), or are sent mid-form prior to submission.
+RELEVANT emails confirm a job application lifecycle event (confirmation, online test, interview invitation, rejection, offer, or status update) where the RECIPIENT is the job applicant.
+- Rejection emails ARE ALWAYS RELEVANT (is_relevant: true, category: REJECTION) because the system must track that this application was rejected.
+- Inbound employee referrals (where a colleague referred the recipient, and the company reaches out to schedule an interview) ARE ALWAYS RELEVANT (is_relevant: true, category: INTERVIEW_INVITATION).
+NOT RELEVANT emails are commercial course sales, outbound referrals tracking someone else, post-interview surveys, or unsubmitted applications.
 """
 
 
@@ -100,9 +105,21 @@ NOT RELEVANT emails ask the candidate to DO something (apply), or are sent mid-f
 
 class RelevanceDecision(BaseModel):
     """Structured decision returned by the Layer 2 Relevance Gate."""
+    is_commercial_course: bool = Field(
+        default=False,
+        description="True if this is a training course, bootcamp, or fee-paying fellowship/scholarship offer."
+    )
+    is_third_party_referral: bool = Field(
+        default=False,
+        description="True if the user is the referrer for someone else, rather than the job applicant."
+    )
+    is_survey_or_feedback: bool = Field(
+        default=False,
+        description="True if this is a candidate experience or post-interview feedback survey."
+    )
     is_relevant: bool = Field(
         ...,
-        description="True if email confirms an already submitted application event; False if promotional, OTP, or alert."
+        description="True if email confirms a job application lifecycle event (confirmation, OA, interview, rejection, offer) for the recipient; False if promotional, survey, third-party referral, OTP, or alert."
     )
     confidence: float = Field(
         ...,
@@ -118,6 +135,19 @@ class RelevanceDecision(BaseModel):
         ...,
         description="Concise rationale explaining the relevance determination."
     )
+
+    @model_validator(mode="after")
+    def reconcile_relevance_and_category(self) -> "RelevanceDecision":
+        """Ensures that confirmed lifecycle events are marked relevant unless explicitly flagged by an adversarial check."""
+        if self.is_commercial_course or self.is_third_party_referral or self.is_survey_or_feedback:
+            self.is_relevant = False
+            return self
+        if self.category in (
+            "APPLICATION_CONFIRMATION", "INTERVIEW_INVITATION",
+            "ASSESSMENT_INVITATION", "REJECTION", "OFFER_LETTER"
+        ):
+            self.is_relevant = True
+        return self
 
 
 # ==============================================================================
@@ -269,6 +299,54 @@ def _heuristic_relevance_check(
                     category="JOB_ALERT",
                     reason=f"Naukri multi-job summary ({count} jobs) without specific single role details."
                 )
+
+    # 4b. Commercial course / fellowship sales
+    if any(sig in full_sample for sig in ["scholarship value", "program fee", "fellowship program", "tuition concession"]):
+        return RelevanceDecision(
+            is_commercial_course=True,
+            is_relevant=False,
+            confidence=0.95,
+            category="PROMOTIONAL_INVITE",
+            reason="Commercial training course, bootcamp, or fee-paying fellowship detected."
+        )
+
+    # 4c. Outbound referral tracking (user referred someone else)
+    if ("thank you for referring" in full_sample or "your referral," in full_sample or "referral bonus" in full_sample) and "referred you" not in full_sample:
+        return RelevanceDecision(
+            is_third_party_referral=True,
+            is_relevant=False,
+            confidence=0.95,
+            category="OTHER",
+            reason="Outbound referral receipt or tracking update for a third party candidate."
+        )
+
+    # 4d. Candidate experience / post-interview surveys
+    if any(sig in full_sample for sig in ["take the survey", "feedback about our interview", "tell us about your interview", "interview experience survey"]):
+        return RelevanceDecision(
+            is_survey_or_feedback=True,
+            is_relevant=False,
+            confidence=0.95,
+            category="OTHER",
+            reason="Candidate experience or post-interview feedback survey detected."
+        )
+
+    # 4e. Draft reminders (incomplete application)
+    if "haven't finished submitting" in full_sample or "haven't submitted it yet" in full_sample:
+        return RelevanceDecision(
+            is_relevant=False,
+            confidence=0.95,
+            category="PROMOTIONAL_INVITE",
+            reason="Unsubmitted application draft reminder detected."
+        )
+
+    # 4f. Event / webinar postponements
+    if ("postponed" in full_sample or "rescheduled" in full_sample) and ("session" in full_sample or "webinar" in full_sample):
+        return RelevanceDecision(
+            is_relevant=False,
+            confidence=0.90,
+            category="OTHER",
+            reason="Event or webinar rescheduling notice detected."
+        )
 
     # 5. Positive signals: Assessment invitations
     assessment_signals = [

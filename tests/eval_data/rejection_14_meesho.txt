@@ -1,0 +1,15 @@
+From: Meesho Talent Team <recruiting@meesho.com>
+To: candidate@gmail.com
+Subject: Application Status Update - SDE-1 (Backend) at Meesho
+Date: Wed, 26 Aug 2026 12:05:30 +0530
+
+Hello Subham,
+
+Thank you for your interest in Meesho and for applying to our SDE-1 (Backend) opportunity.
+
+After a detailed review of your application by our hiring committee, we regret to inform you that we will not be taking your candidacy further. We have received an overwhelming number of applications and had to make challenging selections.
+
+We appreciate your time and wish you the best in your career pursuits.
+
+Best,
+Meesho Talent Acquisition

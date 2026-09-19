@@ -1,0 +1,17 @@
+From: CodeSignal <support@codesignal.com>
+To: candidate@gmail.com
+Subject: Databricks has invited you to complete a General Coding Assessment
+Date: Sun, 13 Sep 2026 17:00:20 +0000
+
+Hi Subham,
+
+Databricks invites you to complete the CodeSignal General Coding Assessment (GCA) for the Software Engineer position.
+
+Duration: 70 minutes
+Deadline to complete: Sep 21, 2026, 11:59 PM PDT
+
+Take the assessment here:
+https://app.codesignal.com/assessment-invite/databricks-2026
+
+Best of luck,
+The CodeSignal Team

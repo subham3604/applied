@@ -1,0 +1,6 @@
+From: Hewlett Packard Enterprise <hpe@myworkday.com>
+To: sydv3604@gmail.com
+Subject: Thank you for your online submission
+Date: Sat, 19 Sep 2026 06:04:18 +0000
+
+body, table { font-family: Verdana, Arial, sans-serif; font-size: 12px; width:100%; } div { padding-top:5px; padding-bottom:5px; } img { border:0px; } Dear Subham , Thank you for your interest in working with Hewlett Packard Enterprise. We are always looking for talented people who truly desire to make a difference.A recruiter will contact you if your skills are found to be a match for any current or future open positions. In the meantime, we hope you will continue to review our job openings at Hewlett Packard Enterprise Careers.Thank you again for applying, and we wish you success in your career search. Regards,Global Talent AcquisitionHewlett Packard EnterpriseThis notification was sent by an automated service. Please do not reply to this message as the reply-to address is not a monitored mailbox. This email was intended for candidate@gmail.com

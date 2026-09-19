@@ -1,0 +1,17 @@
+From: Tech Career Insider <digest@techcareerinsider.io>
+To: candidate@gmail.com
+Subject: Why Google is sending this brutal rejection email to thousands of engineers
+Date: Sat, 19 Sep 2026 13:30:00 +0000
+
+Hey Subham,
+
+Tech hiring in 2026 has become cutthroat. This week, thousands of senior engineers received this exact rejection message from Google Staffing:
+
+'Thank you for giving us the opportunity to consider your background for the Software Engineer role at Google. After careful review, we have decided not to move forward with your candidacy.'
+
+In this edition, we analyze why Google ATS filters are rejecting 98% of applicants and what you can do to optimize your resume.
+
+Read our complete breakdown on the blog:
+https://techcareerinsider.io/faang-rejection-trends
+
+To manage your email preferences, click unsubscribe.

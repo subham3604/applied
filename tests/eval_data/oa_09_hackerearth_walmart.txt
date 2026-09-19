@@ -1,0 +1,18 @@
+From: HackerEarth Assessments <assessments@hackerearth.com>
+To: candidate@gmail.com
+Subject: Walmart Global Tech Online Coding Challenge 2026
+Date: Thu, 17 Sep 2026 12:45:00 +0530
+
+Hello Subham,
+
+Walmart Global Tech India invites you to take part in the Software Engineer Coding Challenge on HackerEarth.
+
+Test Schedule:
+Deadline: Sep 23, 2026 by 23:59 IST
+Total Time: 105 mins
+
+Access the test using your unique invitation URL:
+https://assessment.hackerearth.com/challenges/test/walmart-sde-2026/
+
+Best wishes,
+HackerEarth Team on behalf of Walmart Global Tech

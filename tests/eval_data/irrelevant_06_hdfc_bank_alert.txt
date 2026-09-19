@@ -1,0 +1,6 @@
+From: HDFC Bank InstaAlerts <alerts@hdfcbank.bank.in>
+To: SYDV3604@gmail.com
+Subject: Declined Transaction: Usage Limit Exceeded on Your HDFC Bank Card
+Date: Sat, 19 Sep 2026 06:04:25 +0000
+
+HDFC BANK @media screen and (min-device-width: 320px) and (max-device-width: 768px) { table { width: 100%; } .td { padding: 0px 25px; text-align: left; } .heading { text-align: center; padding: 0px 25px; } .cta { padding: 0px 25px; text-align: center; } } Dear Customer,We regret to inform you that the transaction of Rs. 119275.00 on your HDFC Bank Credit Card ending with 9716 has declined.Reason: Your Domestic Online usage limit is set lower than the attempted transaction amount.To increase the usage limit, please use any of the three channels provided below:1. MyCards: https://mycards.hdfcbank.com/?redirect_url=/productdetails?type=cardDetails&tab=0&productType=CC&productType=CC&type=productdetails2. EVA: http://hdfcbk.io/k/DUvfElcXeva93. WhatsApp: hdfcbk.io/k/DUvfEHrKHzNThank you for banking with us.Sincerely,HDFC Bank For more details on Service charges and Fees, click here. © HDFC Bank

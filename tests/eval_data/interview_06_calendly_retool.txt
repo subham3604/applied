@@ -1,0 +1,16 @@
+From: Retool Recruiting <scheduling@retool.com>
+To: candidate@gmail.com
+Subject: Schedule your technical discussion with Retool
+Date: Wed, 16 Sep 2026 18:00:00 +0000
+
+Hi Subham,
+
+Thank you for submitting your take-home project! The team reviewed your submission and would like to move forward to the technical discussion.
+
+Please use my Calendly link below to choose a 45-minute slot that works best for your schedule:
+https://calendly.com/retool-engineering/tech-screen-subham
+
+Looking forward to our conversation!
+Best,
+Sarah Jenkins
+Retool Talent Team

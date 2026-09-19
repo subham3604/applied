@@ -1,0 +1,15 @@
+From: Amazon Staffing <no-reply@amazon.jobs>
+To: candidate@gmail.com
+Subject: Your application to Amazon: SDE I (Req: 2840911)
+Date: Fri, 28 Aug 2026 08:30:00 +0000
+
+Hello Subham,
+
+Thank you for your interest in the Software Development Engineer I position at Amazon.
+
+We appreciate the time you invested in applying and sharing your technical qualifications. Although your background is impressive, we have decided to pursue other candidates who more closely align with the immediate requirements of this team.
+
+We encourage you to visit amazon.jobs regularly to search and apply for other roles that fit your profile.
+
+Thank you,
+Amazon Recruiting Team

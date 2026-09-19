@@ -1,0 +1,15 @@
+From: Scaler Talent Team <careers@scaler.com>
+To: candidate@gmail.com
+Subject: Update on your application for Backend Engineer at Scaler
+Date: Sat, 19 Sep 2026 12:15:00 +0000
+
+Dear Subham,
+
+Thank you for your interest in employment opportunities with Scaler and for interviewing for the Backend Engineer position on our Core Platform team.
+
+While our engineering team was impressed with your technical background, we have decided to pursue other candidates whose experience more closely aligns with our immediate architectural requirements.
+
+We will keep your profile in our talent pool for future engineering openings at Scaler.
+
+Warm regards,
+Scaler Engineering Talent Acquisition

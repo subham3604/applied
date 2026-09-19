@@ -1,0 +1,15 @@
+From: Atlassian Talent Acquisition <referrals@atlassian.com>
+To: candidate@gmail.com
+Subject: Thank you for referring a candidate for Software Engineer at Atlassian
+Date: Sat, 19 Sep 2026 10:00:00 +0000
+
+Hi Subham,
+
+Thank you for submitting an employee referral for Rahul Sharma for the Software Engineer position at Atlassian.
+
+We have received Rahul's application and resume. Our recruiting team will review their qualifications against the role requirements and will reach out directly to Rahul if their profile is shortlisted for an interview.
+
+You can track the status of your referral anytime on the Atlassian Referral Portal.
+
+Cheers,
+Atlassian Talent Team

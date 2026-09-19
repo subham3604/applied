@@ -1,0 +1,6 @@
+From: wexinc@myworkday.com
+To: sydv3604@gmail.com
+Subject: Thank You for Applying
+Date: Sat, 19 Sep 2026 06:04:19 +0000
+
+body, table { font-family: Verdana, Arial, sans-serif; font-size: 12px; width:100%; } div { padding-top:5px; padding-bottom:5px; } img { border:0px; } Hello,Thank you for your application! We’ve received your information for the position of Software Development Engineer 1 Our Recruiting Team is currently reviewing your profile and if your skills and experience match any of our current openings you may be contacted by phone, text or email.​​​​​​​​​​​​​​​​​​We're so excited to have you explore career options with WEX. Stay connected with us by joining our Talent Community at https://careers.wexinc.com/us/en/jointalentcommunity.Thank you,WEX Global Talent AcquisitionThis email box is not monitored. Please do not reply to this message. This email was intended for candidate@gmail.com

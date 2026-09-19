@@ -1,0 +1,15 @@
+From: Stripe Scheduling <scheduling@stripe.com>
+To: candidate@gmail.com
+Subject: Schedule your upcoming interviews with Stripe
+Date: Fri, 18 Sep 2026 09:10:00 +0000
+
+Hi Subham,
+
+Our team is excited to continue conversations with you! Please click the link below to provide your availability for your 2 technical interview sessions next week:
+
+https://app.goodtime.io/schedule/stripe-subham-eng
+
+If you have any questions before the interview, please don't hesitate to reach out.
+
+Cheers,
+Stripe Recruiting Coordination

@@ -1,0 +1,19 @@
+From: Scaler Admissions <admissions@scaler.com>
+To: candidate@gmail.com
+Subject: Official Offer Letter: Your Full Stack Fellowship Scholarship
+Date: Sat, 19 Sep 2026 07:00:00 +0000
+
+Dear Subham,
+
+We are pleased to extend this official offer letter for your selection into the Scaler Software Engineering Fellowship Program.
+
+Offer Package Details:
+- Program: Full Stack Development & System Design
+- Scholarship Value: 90% tuition concession applied
+- Total program fee: INR 4,999 (reduced from INR 50,000)
+
+Please review the terms and accept the offer within 48 hours to confirm your seat and batch commencement date.
+
+Regards,
+Admissions Committee
+Scaler Academy

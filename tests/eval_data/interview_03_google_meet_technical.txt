@@ -1,0 +1,20 @@
+From: Google Recruiting <recruiter@google.com>
+To: candidate@gmail.com
+Subject: Interview with Google: Technical Round 1
+Date: Mon, 14 Sep 2026 14:00:00 +0000
+
+Hi Subham,
+
+Thank you for completing the initial questionnaire. We would like to invite you to a 45-minute technical video interview with one of our Software Engineers.
+
+Interview Details:
+Date: Thursday, September 24, 2026
+Time: 3:00 PM - 3:45 PM IST
+Platform: Google Meet (link below)
+https://meet.google.com/xyz-abcd-efg
+
+The interview will focus on data structures, algorithms, and coding in a shared Google Doc environment. Please confirm if this time works for you.
+
+Best,
+Alex
+Technical Recruiter, Google

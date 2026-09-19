@@ -1,0 +1,16 @@
+From: CRED People Team <careers@cred.club>
+To: candidate@gmail.com
+Subject: CRED Technical Discussion: Machine Coding Round
+Date: Fri, 18 Sep 2026 15:30:00 +0530
+
+Hi Subham,
+
+We would like to invite you for the Machine Coding round with CRED's engineering team.
+
+When: Tuesday, Sep 22 at 5:00 PM IST
+Zoom URL: https://cred.zoom.us/j/81293810293
+
+You will be given a problem statement to design and code clean, modular, extensible object-oriented code in 90 minutes.
+
+See you then!
+CRED Engineering

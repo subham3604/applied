@@ -1,0 +1,20 @@
+From: LeetCode Talent Acquisition <recruiting@leetcode.com>
+To: candidate@gmail.com
+Subject: Interview Invitation: Software Engineer (Backend Systems) at LeetCode
+Date: Sat, 19 Sep 2026 12:00:00 +0000
+
+Hi Subham,
+
+Thank you for your application to LeetCode for the Software Engineer (Backend Systems) role.
+
+Our engineering leadership reviewed your background and was impressed with your experience in high-throughput distributed systems and API architectures. We would like to invite you for a 45-minute technical video interview with our Lead Infrastructure Engineer.
+
+Interview Details:
+- Format: 45 minutes on Google Meet
+- Focus: Distributed system architecture and scalable concurrency
+
+Please choose a slot that works best for your schedule using the link below:
+https://calendly.com/leetcode-eng-hiring/subham-backend-screen
+
+Best regards,
+LeetCode Recruiting Team

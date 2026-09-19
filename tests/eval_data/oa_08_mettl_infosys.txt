@@ -1,0 +1,19 @@
+From: Mercer Mettl Assessment <admin@mettl.com>
+To: candidate@gmail.com
+Subject: Infosys Specialist Programmer Coding Assessment Invitation
+Date: Wed, 16 Sep 2026 08:30:15 +0530
+
+Dear Candidate,
+
+You have been invited by Infosys Ltd to attempt the Specialist Programmer Online Assessment on Mercer Mettl.
+
+Test window:
+Start Time: Sep 18, 2026 09:00 AM IST
+End Time: Sep 20, 2026 06:00 PM IST
+Duration: 120 minutes
+
+Click on the link below to verify system requirements and begin your assessment:
+https://tests.mettl.com/authenticateKey/infosys-sp-sep26
+
+Regards,
+Mercer | Mettl Assessment Team

@@ -1,0 +1,15 @@
+From: Stripe Recruiting <recruiting@stripe.com>
+To: candidate@gmail.com
+Subject: Your application with Stripe
+Date: Mon, 10 Aug 2026 14:22:10 +0000
+
+Hi Subham,
+
+Thank you for your interest in the Software Engineer, Infrastructure role at Stripe and for taking the time to share your background with us.
+
+After careful review of your application, we have decided not to move forward with your candidacy at this time. We receive many applications from talented engineers and must make difficult decisions based on our current team requirements.
+
+We wish you all the best in your job search and your future professional endeavors.
+
+Sincerely,
+Stripe Talent Acquisition

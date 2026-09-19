@@ -1,0 +1,17 @@
+From: Retool Recruiting <recruiting@retool.com>
+To: candidate@gmail.com
+Subject: Retool Technical Take-Home Project: Full Stack Engineer
+Date: Tue, 15 Sep 2026 19:40:00 +0000
+
+Hi Subham,
+
+We enjoyed reviewing your background. As discussed, our next step is a take-home coding project where you will implement a small REST service with caching.
+
+The project instructions and starter repository are linked below:
+https://github.com/retool-challenges/takehome-assignment-sep26
+
+We ask that you submit your solution by Sep 22, 2026 at 5:00 PM EST.
+
+Looking forward to seeing your work!
+Best,
+Retool Engineering Team

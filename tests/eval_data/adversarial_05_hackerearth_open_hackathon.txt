@@ -1,0 +1,19 @@
+From: HackerEarth Competitions <challenges@hackerearth.com>
+To: candidate@gmail.com
+Subject: Coding Assessment: Global Algorithms Challenge 2026
+Date: Sat, 19 Sep 2026 08:30:00 +0000
+
+Hello Subham,
+
+You are invited to participate in the Global Algorithms Challenge 2026 hosted on HackerEarth.
+
+Challenge Schedule:
+- Duration: 90 minutes
+- Assessment window: Opens Sep 20, 2026 10:00 AM IST | Closes Sep 22, 2026 23:59 IST
+- Prize pool: ,000 in cash prizes and developer badges
+
+Access your competition test link here:
+https://www.hackerearth.com/challenges/competitive/global-algorithms-2026
+
+Best of luck!
+HackerEarth Challenge Team

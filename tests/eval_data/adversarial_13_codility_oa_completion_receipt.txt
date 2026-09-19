@@ -1,0 +1,18 @@
+From: Codility Notifications <notifications@codility.com>
+To: candidate@gmail.com
+Subject: Confirmation: You have completed your Uber Coding Assessment
+Date: Sat, 19 Sep 2026 13:00:00 +0000
+
+Hi Subham,
+
+This email confirms that you have completed the Uber Software Engineer Online Coding Assessment on Codility.
+
+Submission Details:
+- Completed at: Sep 19, 2026 12:45 UTC
+- Status: Successfully Submitted
+- Tasks: 3 of 3 tasks submitted
+
+Your assessment results have been automatically forwarded to the Uber University Recruiting team for review. You do not need to take any further action at this time.
+
+Best regards,
+Codility Candidate Support

@@ -1,0 +1,16 @@
+From: Uber University Recruiting <noreply@codility.com>
+To: candidate@gmail.com
+Subject: Uber: Software Engineer Coding Assessment on Codility
+Date: Sat, 12 Sep 2026 15:10:00 +0000
+
+Hi Subham,
+
+Thanks for your application to Uber. We would like to invite you to take our online coding challenge on Codility.
+
+You have 70 minutes to complete 3 programming tasks.
+Please complete your assessment before Sep 19, 2026 11:59 PM PST.
+
+Test Link: https://app.codility.com/c/run/UBER-SWE-2026-SEP
+
+Good luck with the challenge!
+Uber University Recruiting

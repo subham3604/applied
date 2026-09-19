@@ -1,0 +1,21 @@
+From: LeetCode Career Digest <newsletter@leetcode.com>
+To: candidate@gmail.com
+Subject: Your upcoming interview with Amazon - Top Coding Questions
+Date: Sat, 19 Sep 2026 08:00:00 +0000
+
+Hi Subham,
+
+Preparing for your upcoming interview with Amazon?
+
+Our comprehensive Amazon SDE interview preparation guide covers the top 10 most frequently asked questions in Amazon coding and system design rounds.
+
+Interview Practice Details:
+- 45-minute timed simulation
+- Real Amazon leadership principles questions
+- Code evaluation against strict performance benchmarks
+
+Click below to launch your mock interview simulation now:
+https://leetcode.com/interview/simulate/amazon-sde
+
+Happy coding!
+The LeetCode Team

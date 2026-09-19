@@ -1,0 +1,15 @@
+From: Swiggy Talent Acquisition <talent@swiggy.in>
+To: candidate@gmail.com
+Subject: Your Candidacy at Swiggy (Bundl Technologies)
+Date: Sat, 22 Aug 2026 15:40:12 +0530
+
+Dear Subham,
+
+Thank you for your interest in joining Swiggy and for sharing your details with our engineering team for the Software Development Engineer II role.
+
+We have carefully reviewed your application against our current technical benchmarks. Regrettably, we will not be proceeding with your candidacy for this role at this stage.
+
+Thank you once again for your interest in Swiggy. We wish you every success in your future career endeavors.
+
+Warm regards,
+Swiggy Talent Acquisition Team

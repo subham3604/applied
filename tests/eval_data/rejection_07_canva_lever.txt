@@ -1,0 +1,15 @@
+From: Canva Talent Team <jobs@hire.lever.co>
+To: candidate@gmail.com
+Subject: Your application at Canva - Software Engineer (Backend)
+Date: Wed, 12 Aug 2026 09:15:00 +0000
+
+Hi Subham,
+
+Thank you for applying to Canva for the Software Engineer (Backend) role. We really appreciate your interest in joining our mission to empower the world to design.
+
+While we were impressed by your engineering experience and technical skills, our hiring team has decided to proceed with other candidates whose profiles more closely align with the immediate technical needs of this position.
+
+We will keep your resume on file in our talent community should a role open up in the future that fits your background.
+
+Best regards,
+The Canva Talent Team

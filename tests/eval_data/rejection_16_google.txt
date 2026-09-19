@@ -1,0 +1,15 @@
+From: Google Staffing <jobs@google.com>
+To: candidate@gmail.com
+Subject: Your application with Google
+Date: Sun, 30 Aug 2026 19:12:45 +0000
+
+Hi Subham,
+
+Thank you for giving us the opportunity to consider your background for the Software Engineer, Systems role at Google.
+
+Our staffing team and engineering managers reviewed your application, and while we were impressed with your technical experiences, we have decided not to advance your application to the interview stage at this time.
+
+We are constantly growing and new openings appear frequently. Please feel free to apply again for other roles that align with your experience.
+
+Best regards,
+Google Staffing Team

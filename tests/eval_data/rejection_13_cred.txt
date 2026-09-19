@@ -1,0 +1,15 @@
+From: CRED People Team <careers@cred.club>
+To: candidate@gmail.com
+Subject: CRED / Application Status - Backend Engineer
+Date: Mon, 24 Aug 2026 17:20:00 +0530
+
+Hi Subham,
+
+Thank you for giving CRED an opportunity to consider your profile for the Backend Engineer position.
+
+We have evaluated your experience with high throughput services. Unfortunately, we are unable to take your candidacy forward for this specific role at this time, as we have decided to progress with other candidates.
+
+We hope to keep in touch and will reach out if a role matching your skill set opens up.
+
+Regards,
+Team CRED

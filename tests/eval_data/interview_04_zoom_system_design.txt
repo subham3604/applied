@@ -1,0 +1,16 @@
+From: Uber Recruiting <talent@uber.com>
+To: candidate@gmail.com
+Subject: Uber Interview: Systems Architecture & Design Round
+Date: Tue, 15 Sep 2026 16:30:00 +0000
+
+Hi Subham,
+
+Congratulations on advancing past the coding round! We would like to schedule your System Design interview for the Backend Engineer position at Uber.
+
+Meeting link: https://uber.zoom.us/j/9812739481
+Format: 60-minute technical session covering distributed systems architecture, latency tradeoffs, and data storage design.
+
+Please let us know your availability for either Wednesday or Friday next week.
+
+Best regards,
+Uber Engineering Recruiting

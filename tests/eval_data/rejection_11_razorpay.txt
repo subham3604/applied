@@ -1,0 +1,15 @@
+From: Razorpay Careers <careers@razorpay.com>
+To: candidate@gmail.com
+Subject: Update on your application with Razorpay: SDE-2 Backend
+Date: Thu, 20 Aug 2026 13:10:45 +0530
+
+Hi Subham,
+
+Thank you for taking the time to apply for the SDE-2 Backend position at Razorpay.
+
+While we appreciate your background in Python and distributed databases, we have decided not to move forward with your application at this time. Our team is currently moving ahead with candidates whose specific domain experience aligns more closely with our payments infrastructure requirements.
+
+We wish you the very best in your search.
+
+Cheers,
+Razorpay Talent Team

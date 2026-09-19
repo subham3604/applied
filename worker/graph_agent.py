@@ -166,19 +166,63 @@ def node_extract_event(state: AgentState) -> Dict[str, Any]:
 
     raw_text = state.get("raw_email_text", "")
     subject = state.get("subject", "")
-    combined = f"{subject}\n{raw_text}"
+    combined = f"{subject}\n{raw_text}".lower()
+
+    # Reconcile semantic rejection overrides (e.g. polite confirmation subject hiding a rejection)
+    if any(sig in combined for sig in [
+        "decided not to move forward", "will not be moving forward", "not to move forward",
+        "regret to inform", "not taking your candidacy", "pursue other candidates",
+        "pursue other applicants", "position closed", "offer of employment extended", "officially rescinded"
+    ]):
+        if "rescinded" in combined or not any(sig in combined for sig in ["interview", "assessment"]):
+            event_type = ApplicationEventType.REJECTED
+
+    # Reconcile OA completion receipt (submission finished, not pending OA)
+    if any(sig in combined for sig in ["completed your", "submission received", "tasks submitted"]):
+        if event_type == ApplicationEventType.OA_RECEIVED:
+            event_type = ApplicationEventType.APPLICATION_RECEIVED
+
+    # 1. First priority: Extract company from Sender Display Name or Domain
+    sender = state.get("sender", "")
+    KNOWN_COMPANIES = [
+        "Hewlett Packard Enterprise", "Modernizing Medicine", "JPMorgan Chase", "Goldman Sachs",
+        "GE Vernova", "Bloomberg", "QuickReply", "Databricks", "Microsoft", "Atlassian",
+        "Razorpay", "Infosys", "Walmart", "LeetCode", "Scaler", "Netomi", "Zomato",
+        "Retool", "Swiggy", "Google", "Amazon", "Canva", "Adobe", "Notion", "Meesho",
+        "Stripe", "Uber", "Cisco", "CRED", "NICE", "VMware", "WEX", "IQVIA", "Iskima",
+        "NxtWave", "Visa", "Momentum", "Zyntrix", "Quon Labs", "PhonePe", "TCS", "Bundl Technologies", "Datadog"
+    ]
+    
     company = "Unknown Company"
+    # Check Workday ATS prefixes first (e.g. modmed@myworkday.com, wexinc@myworkday.com)
+    if "@myworkday.com" in sender.lower():
+        prefix = sender.lower().split("@")[0].split("<")[-1].strip()
+        if "modmed" in prefix:
+            company = "Modernizing Medicine"
+        elif "wex" in prefix:
+            company = "WEX"
+        elif "hpe" in prefix:
+            company = "Hewlett Packard Enterprise"
+        elif "gevernova" in prefix:
+            company = "GE Vernova"
+        elif "adobe" in prefix:
+            company = "Adobe"
 
-    # 1. Check known tech brands in subject/body first
-    for w in [
-        "Zyntrix", "Quon Labs", "Swiggy", "Google", "Uber", "Datadog",
-        "PhonePe", "Infosys", "TCS", "Razorpay", "Cred", "Stripe", "Amazon"
-    ]:
-        if re.search(rf'\b{re.escape(w)}\b', combined, re.IGNORECASE):
-            company = w
-            break
+    # Check sender display name (e.g. "Cisco Recruiting", "LeetCode Talent Acquisition")
+    if company == "Unknown Company":
+        for comp in KNOWN_COMPANIES:
+            if re.search(rf'\b{re.escape(comp)}\b', sender, re.IGNORECASE):
+                company = comp
+                break
 
-    # 2. If not found in known brands, try preposition regex from subject
+    # 2. Second priority: Subject line patterns
+    if company == "Unknown Company":
+        for comp in KNOWN_COMPANIES:
+            if re.search(rf'\b{re.escape(comp)}\b', subject, re.IGNORECASE):
+                company = comp
+                break
+
+    # 3. Third priority: Preposition match in subject
     if company == "Unknown Company":
         match = re.search(
             r'(?:applying to|applied to|welcome to|offer from|interview with|invite from|at|by|from|with)\s+'
@@ -188,17 +232,24 @@ def node_extract_event(state: AgentState) -> Dict[str, Any]:
         )
         if match and len(match.group(1).strip()) > 1:
             cand_name = match.group(1).strip()
-            if not any(bad in cand_name.lower() for bad in ("interview", "assessment", "application", "invitation", "opportunity", "update")):
+            if not any(bad in cand_name.lower() for bad in ("interview", "assessment", "application", "invitation", "opportunity", "update", "next steps")):
                 company = cand_name
 
-    # 3. Fallback to sender domain if company still unknown
-    sender = state.get("sender", "")
+    # 4. Fourth priority: Check sender domain
     if company == "Unknown Company" and "@" in sender:
         domain_match = re.search(r'@(?:careers\.|jobs\.|talent\.|recruiting\.|hr\.)?([A-Za-z0-9\-]+)\.', sender)
         if domain_match:
             dom = domain_match.group(1).lower()
-            if dom not in ("gmail", "yahoo", "outlook", "hotmail", "greenhouse", "lever", "workday", "smartrecruiters"):
+            if dom not in ("gmail", "yahoo", "outlook", "hotmail", "greenhouse", "lever", "workday", "smartrecruiters", "ashbyhq", "hackerrankforwork", "hackerrank", "codility", "mettl", "hackerearth", "codesignal"):
                 company = dom.capitalize()
+
+    # 5. Fifth priority: Known companies in body text (ignoring meeting tool mentions like "Google Meet")
+    if company == "Unknown Company":
+        body_cleaned = re.sub(r'\bGoogle\s+Meet\b|\bGoogle\s+Docs?\b|\bZoom\s+Meeting\b|\bZoom\s+Call\b', '', raw_text, flags=re.IGNORECASE)
+        for comp in KNOWN_COMPANIES:
+            if re.search(rf'\b{re.escape(comp)}\b', body_cleaned, re.IGNORECASE):
+                company = comp
+                break
 
     # Extract due date and time for OA and Interviews
     deadline = None
@@ -233,7 +284,7 @@ def node_extract_event(state: AgentState) -> Dict[str, Any]:
     )
     if role_pattern and len(role_pattern.group(1).strip()) > 2:
         cand_role = role_pattern.group(1).strip()
-        if not any(bad in cand_role.lower() for bad in ("interview", "assessment", "application", "submission", "next steps")):
+        if not any(bad in cand_role.lower() for bad in ("interview", "assessment", "application", "submission", "next steps", "referral from", "dear candidate")):
             role_title = cand_role
 
     extracted = {

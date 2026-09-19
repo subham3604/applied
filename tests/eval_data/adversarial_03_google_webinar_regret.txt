@@ -1,0 +1,15 @@
+From: Google Developer Relations <events@google.com>
+To: candidate@gmail.com
+Subject: Google Engineering Session: Unfortunately Rescheduled
+Date: Sat, 19 Sep 2026 07:30:00 +0000
+
+Dear Subham,
+
+Thank you for your interest in Google Engineering.
+
+We regret to inform you that tomorrow's technical session on 'Building Scalable Microservices with Google Cloud' has been postponed due to unforeseen scheduling conflicts with our lead speakers. We sincerely apologize for this inconvenience.
+
+We will keep your registration on file and send an updated Google Meet link once the new session date is confirmed.
+
+Best regards,
+Google Developer Relations Team

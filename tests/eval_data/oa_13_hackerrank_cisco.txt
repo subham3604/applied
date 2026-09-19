@@ -1,0 +1,18 @@
+From: Cisco Recruiting <support@hackerrankforwork.com>
+To: candidate@gmail.com
+Subject: Cisco Systems Engineer Online Assessment Invitation
+Date: Wed, 16 Sep 2026 11:15:30 +0000
+
+Dear Subham,
+
+Thank you for applying for the Systems Engineer role at Cisco. You are invited to take the Cisco Online Technical Assessment.
+
+Assessment details:
+- 2 Coding Problems & 15 Networking / CS fundamentals questions
+- Duration: 90 Minutes
+- Must be completed by: Sep 24, 2026 23:59 UTC
+
+Link: https://www.hackerrank.com/tests/cisco-se-assessment-2026/login
+
+Regards,
+Cisco University Relations Team
