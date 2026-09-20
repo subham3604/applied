@@ -21,11 +21,13 @@ graph TD
     Worker -->|Tier-1 Regex Pre-Filter| Worker
     Worker -->|Tier-2 LangGraph DAG| OpenAI
     Worker -->|Persist State and Audit Events| DB
+    Worker -->|Queue Ambiguous Inbound Items| DB
 
     FastAPI -->|Extract JD and Score Requirements| OpenAI
     FastAPI -->|Cosine Similarity Search| DB
     FastAPI -->|Application CRUD and Overrides| DB
-    FastAPI <-->|Live Updates| Client
+    FastAPI -->|Triage Resolution and Deck API| DB
+    FastAPI <-->|Live Updates and Triage Deck| Client
 ```
 
 ---
@@ -45,6 +47,8 @@ Raw Inbound Email ──► [Tier-1: Regex Pre-Filter] ──► (Reject: Newsle
                              ├── Node 1: Hierarchical Entity Extractor
                              ├── Node 2: Stage Classifier
                              └── Node 3: State Reconciler & DB Committer
+                                   ├── High Confidence Match ──► Advance Application Status + Log Event
+                                   └── Ambiguous / Multi-Match ──► Inbound Triage Queue (inbound_triage_items)
 ```
 
 * **Tier-1 Regex Pre-Filter:** Drops commercial newsletters, marketing promotions, OTPs, and irrelevant transactional receipts in <5ms using sender headers and subject line heuristics.
@@ -57,7 +61,12 @@ To prevent state corruption from delayed, out-of-order, or ambiguous emails, the
 $$\text{APPLIED} \longrightarrow \text{OA\_PENDING} \longrightarrow \text{INTERVIEW\_ROUND} \longrightarrow \text{OFFER} \;\;/\;\; \text{REJECTED}$$
 
 * **Non-Reversible Invariants:** An application in `INTERVIEW_ROUND` will automatically reject an out-of-order confirmation email that attempts to regress its status to `APPLIED`.
-* **Attention Required Queue:** If an email is confirmed relevant but fails confident entity resolution, it is routed to an *Attention Required* holding state, triggering a visual banner in the UI for 1-click human assignment.
+* **Attention Required Inbound Triage Queue:** If an email is confirmed relevant but fails confident single-record entity resolution (e.g. candidate has multiple active roles at the same company, or the message arrives from an alias domain like *Bundl Technologies / Swiggy* without an explicit role title), it is quarantined into `inbound_triage_items` with status `PENDING`.
+  * **Candidate Correlation:** The worker evaluates potential application matches using fuzzy matching and role heuristics, attaching `candidate_application_ids` as a JSONB list.
+  * **Human-in-the-Loop Triaging:** The React frontend consumes `GET /api/attention` and renders an interactive stacked card deck banner atop the Kanban board. The user has 3 atomic actions:
+    1. **Assign to Candidate:** `POST /api/attention/{id}/assign` advances the target application's stage, marks the triage item `RESOLVED`, and appends an immutable `PipelineEvent` with `source = GMAIL_WORKER`.
+    2. **Create New Application:** `POST /api/attention/{id}/create-application` creates a new application record in the target stage, sets platform to `Inbound Email`, and logs initial provenance.
+    3. **Dismiss:** `POST /api/attention/{id}/dismiss` sets item status to `DISMISSED` without mutating pipeline records.
 
 ### 2.3 Grounded RAG Resume Tailor & Anti-Hallucination Guard
 When a candidate drops a raw Job Description (JD):
@@ -89,6 +98,7 @@ When a candidate drops a raw Job Description (JD):
 ## 4. Failure Recovery & Self-Healing
 
 * **Gmail Token Refresh:** Headless OAuth2 client automatically refreshes expiring tokens using stored refresh secrets without interrupting polling cycles.
+* **Ambiguous Entity Isolation:** Inbound emails that fail confident entity resolution are safely parked in `inbound_triage_items` rather than hallucinating state changes or aborting the batch, allowing automated polling to complete cleanly.
 * **Dead-Letter Logging:** Irrelevant emails or malformed payloads are logged to a dead-letter audit table with full headers for post-mortem debugging.
 * **State Rollback:** Database writes and audit log updates are wrapped in atomic SQLAlchemy transactions; if a state transition fails verification, the transaction rolls back cleanly.
 

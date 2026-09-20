@@ -84,6 +84,11 @@ python scripts/seed_vault.py --file data/master_vault.json
 uvicorn web.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+*(Optional)* To populate the attention banner with realistic ambiguous email items for UI verification:
+```bash
+curl -X POST http://localhost:8000/api/attention/seed-demo
+```
+
 #### Step 4: Launch React Frontend (Separate Terminal)
 ```bash
 cd frontend
@@ -91,14 +96,14 @@ npm install
 npm run dev
 ```
 
-Visit `http://localhost:5173` to view the interactive Kanban board.
+Visit `http://localhost:5173` to view the interactive Kanban board and attention triage deck.
 
 ---
 
 ## 4. Running the Test Suite
 
 ```bash
-# Run all unit and integration tests (141 tests)
+# Run all unit and integration tests (143 tests)
 pytest tests/ -v
 
 # Run the 73-sample empirical evaluation benchmark

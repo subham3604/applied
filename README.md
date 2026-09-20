@@ -43,12 +43,13 @@ graph TD
     Gmail -->|Daily Ingestion| Worker
     Worker -->|Tier-1 Regex Pre-Filter| Worker
     Worker -->|Tier-2 LangGraph DAG| OpenAI
-    Worker -->|Persist State Changes| DB
+    Worker -->|Persist State and Audit Events| DB
+    Worker -->|Queue Ambiguous Inbound Items| DB
 
     FastAPI -->|Extract JD and Score Requirements| OpenAI
     FastAPI -->|Cosine Similarity Search| DB
-    FastAPI -->|Audit Events and CRUD| DB
-    FastAPI <-->|Live Updates| Client
+    FastAPI -->|Audit Events, CRUD, and Attention Queue| DB
+    FastAPI <-->|Live Updates and Triage Deck| Client
 ```
 
 > For deep architectural specifications, component trade-offs, and state invariants, see [docs/architecture.md](docs/architecture.md).
@@ -59,6 +60,7 @@ graph TD
 
 - **Autonomous ATS Ingestion** — Headless Gmail background worker with 5-tier entity resolution for Workday, Greenhouse, Lever, and Ashby.
 - **Deterministic State Machine** — LangGraph DAG enforcing strict, non-reversible lifecycle progression (`APPLIED` $\rightarrow$ `OA_PENDING` $\rightarrow$ `INTERVIEW_ROUND` $\rightarrow$ `OFFER` / `REJECTED`).
+- **Inbound Attention Queue & Stacked Deck Banner** — Ambiguous correspondence (multi-role employers, legal entity aliases like *Bundl Technologies / Swiggy*) is automatically quarantined into `inbound_triage_items` with a stacked card deck for 1-click candidate assignment, inline application creation, or dismissal.
 - **Grounded RAG Resume Tailor** — 1536-dimensional cosine vector retrieval (`pgvector`) matching job requirements against the Master Experience Vault.
 - **Anti-Hallucination Guard** — Automated verification layer ensuring generated resumes contain zero ungrounded technical claims.
 - **Empirically Evaluated** — Hardened against 73 real-world samples with a 93.75% defense rate against deceptive adversarial traps.
@@ -81,8 +83,8 @@ Once a day, the background worker polls the Gmail API for new recruitment-relate
 ### 4. Classification & State Progression
 Relevant emails are parsed through a 4-node LangGraph state machine. When an online assessment or interview invitation is detected, the application automatically advances and logs an immutable audit event.
 
-### 5. Human-in-the-Loop Overrides
-Ambiguous correspondence or edge cases trigger an *Attention Required* banner in the UI, allowing the user to reassign or update application state with a single click.
+### 5. Human-in-the-Loop Triage & Attention Queue
+When an inbound email is confirmed relevant but lacks confident single-application association (e.g. multiple active roles for the same company or corporate alias mismatches), the system routes it to the **Inbound Attention Queue** (`inbound_triage_items`). An interactive stacked card deck banner surfaces at the top of the Kanban dashboard, enabling 1-click candidate application assignment, inline application creation, or dismissal—immediately updating application state and recording a verifiable `PipelineEvent` audit trail with zero manual data entry.
 
 ---
 
@@ -112,7 +114,7 @@ The extraction and classification engine was evaluated against a **73-sample rea
 | **Frontend** | React 19, TanStack Start, TypeScript, Tailwind CSS |
 | **Worker & Automation** | APScheduler (Daily Cron), Google Gmail API, OAuth2 |
 | **Infrastructure & Hosting**| Render (FastAPI Docker), Vercel (Edge CDN), Supabase (PostgreSQL 16) |
-| **Testing** | pytest, pytest-asyncio, HTTPX (141 automated tests) |
+| **Testing** | pytest, pytest-asyncio, HTTPX (143 automated tests) |
 
 ---
 
@@ -125,6 +127,7 @@ Interactive Swagger UI: **[applied-api.onrender.com/docs](https://applied-api.on
 | `/api/applications/parse` | `POST` | Ingests raw JD text, extracts requirements, matches vector bullets, and saves application |
 | `/api/applications` | `GET` | Lists all active applications with stages, timelines, and metadata |
 | `/api/applications/{id}/status` | `PATCH` | Direct status override for drag-and-drop Kanban updates |
+| `/api/attention` | `GET`, `POST` | Triage queue: lists ambiguous inbound items, assigns to applications, or creates records |
 | `/api/metrics` | `GET` | Stats bar metrics (total applications, active stage counts, response rates) |
 | `/api/vault` | `GET`, `POST` | Full CRUD for verified career bullets with automated vector embeddings |
 | `/health` | `GET` | Container and database health probe |

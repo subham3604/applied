@@ -90,7 +90,101 @@ Deletes a vault item and cascades the deletion of its associated vector index.
 
 ---
 
-### 2.4 System Health (`/health`)
+### 2.4 Inbound Attention & Ambiguous Triage Queue (`/api/attention`)
+
+#### `GET /api/attention`
+Fetches all pending ambiguous inbound emails quarantined by the background worker, enriched with candidate application matches for 1-click human triage.
+
+**Response Payload (200 OK):**
+```json
+[
+  {
+    "id": "c1f7a0b5-7489-4d32-bb15-5e0450db2d01",
+    "source": "GMAIL_WORKER",
+    "sender": "recruiting@bundltechnologies.com",
+    "recipient": "candidate@gmail.com",
+    "subject": "Next steps regarding your application at Bundl Technologies (Swiggy)",
+    "raw_body": "Hi candidate, thank you for your application to Bundl Technologies (Swiggy)...",
+    "detected_company": "Bundl Technologies",
+    "detected_role": "Full Stack Engineer",
+    "suggested_stage": "INTERVIEW_ROUND",
+    "resolution_confidence": "AMBIGUOUS",
+    "resolution_note": "Multiple active applications found under alias 'Bundl Technologies / Swiggy'. Needs user disambiguation.",
+    "candidate_application_ids": ["9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"],
+    "candidate_apps": [
+      {
+        "id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+        "company": "Swiggy",
+        "role": "Backend Engineer",
+        "stage": "APPLIED",
+        "applied_at": "2026-09-18T10:00:00Z"
+      }
+    ],
+    "status": "PENDING",
+    "created_at": "2026-09-20T08:00:00Z"
+  }
+]
+```
+
+#### `POST /api/attention/{id}/assign`
+Assigns an ambiguous inbound email to an existing application, advances the application's stage, marks the triage item `RESOLVED`, and appends an immutable `PipelineEvent` audit row.
+
+**Request Payload:**
+```json
+{
+  "application_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+  "new_status": "INTERVIEW_ROUND",
+  "note": "Assigned from Bundl email to Swiggy Backend Engineer"
+}
+```
+
+**Response Payload (200 OK):**
+```json
+{
+  "success": true,
+  "application_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+  "status": "INTERVIEW_ROUND"
+}
+```
+
+#### `POST /api/attention/{id}/create-application`
+Creates a new application directly from the triage item, appends initial provenance to `pipeline_events`, and marks the triage item `RESOLVED`.
+
+**Request Payload:**
+```json
+{
+  "company_name": "Bundl Technologies",
+  "role_title": "Full Stack Engineer",
+  "status": "INTERVIEW_ROUND",
+  "note": "Created new record from inbound email"
+}
+```
+
+**Response Payload (200 OK):**
+```json
+{
+  "success": true,
+  "application_id": "e4a2c1d0-9988-4bb1-a123-7c8d9e0f1a2b"
+}
+```
+
+#### `POST /api/attention/{id}/dismiss`
+Dismisses an ambiguous triage item without mutating any application records. Sets status to `DISMISSED`.
+
+**Response Payload (200 OK):**
+```json
+{
+  "success": true,
+  "dismissed_id": "c1f7a0b5-7489-4d32-bb15-5e0450db2d01"
+}
+```
+
+#### `POST /api/attention/seed-demo`
+Seeds sample realistic ambiguous triage items (e.g. Bundl/Swiggy alias disambiguation, Stripe role confusion) for verification and testing.
+
+---
+
+### 2.5 System Health (`/health`)
 
 #### `GET /health`
 Returns container health status and database connectivity for Kubernetes and Render health-check probes.
