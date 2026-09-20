@@ -233,8 +233,9 @@ export interface AttentionItem {
   created_at: string;
 }
 
-export async function fetchAttentionItems(): Promise<AttentionItem[]> {
-  const res = await fetch(`${API_BASE}/api/attention`, { cache: "no-store" });
+export async function fetchAttentionItems(includeDemo: boolean = true): Promise<AttentionItem[]> {
+  const url = `${API_BASE}/api/attention?include_demo=${includeDemo ? "true" : "false"}`;
+  const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`Failed to fetch attention items: ${res.statusText}`);
   return res.json();
 }
@@ -291,6 +292,15 @@ export async function seedDemoAttention(): Promise<{ success: boolean }> {
   if (!res.ok) throw new Error(`Failed to seed demo attention: ${res.statusText}`);
   return res.json();
 }
+
+export async function clearDemoAttention(): Promise<{ success: boolean; deleted: number }> {
+  const res = await fetch(`${API_BASE}/api/attention/clear-demo`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`Failed to clear demo attention: ${res.statusText}`);
+  return res.json();
+}
+
 
 
 

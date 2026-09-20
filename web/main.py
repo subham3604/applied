@@ -793,17 +793,19 @@ def _serialize_triage_item(item: InboundTriageItem, db: Session) -> dict:
 
 @app.get("/api/attention")
 def get_attention_items(
+    include_demo: bool = True,
     db: Session = Depends(get_db),
 ):
     """
     Returns all unresolved (PENDING) inbound items requiring user triage.
     """
-    items = (
-        db.query(InboundTriageItem)
-        .filter(InboundTriageItem.status == "PENDING")
-        .order_by(InboundTriageItem.created_at.desc())
-        .all()
-    )
+    query = db.query(InboundTriageItem).filter(InboundTriageItem.status == "PENDING")
+    if not include_demo:
+        query = query.filter(
+            InboundTriageItem.source != "DEMO",
+            ~InboundTriageItem.sender.in_(["recruiting@bundltechnologies.com", "talent-team@stripe.com"])
+        )
+    items = query.order_by(InboundTriageItem.created_at.desc()).all()
     return [_serialize_triage_item(item, db) for item in items]
 
 
@@ -968,18 +970,21 @@ def seed_demo_attention_items(
 ):
     """
     Seeds initial realistic ambiguous triage items (Bundl/Swiggy, Stripe, Datadog)
-    if no pending items exist, or adds demo items for verification.
+    if no pending items exist, marked with source="DEMO".
     """
-    existing = db.query(InboundTriageItem).filter(InboundTriageItem.status == "PENDING").count()
+    existing = db.query(InboundTriageItem).filter(
+        (InboundTriageItem.source == "DEMO")
+        | (InboundTriageItem.sender.in_(["recruiting@bundltechnologies.com", "talent-team@stripe.com"]))
+    ).count()
     if existing > 0:
-        return {"success": True, "message": f"{existing} pending triage items already exist."}
+        return {"success": True, "message": f"{existing} demo triage items already exist."}
 
     swiggy_apps = db.query(Application).filter(func.lower(Application.company_name).like("%swiggy%")).all()
     swiggy_ids = [str(a.id) for a in swiggy_apps]
 
     item1 = InboundTriageItem(
         id=uuid.uuid4(),
-        source="GMAIL_WORKER",
+        source="DEMO",
         sender="recruiting@bundltechnologies.com",
         subject="Next steps regarding your application at Bundl Technologies (Swiggy)",
         raw_body="Hi candidate, thank you for your application to Bundl Technologies (Swiggy). We were impressed with your engineering background and would like to schedule a technical discussion regarding your candidacy. Please confirm which application and stage to update.",
@@ -996,7 +1001,7 @@ def seed_demo_attention_items(
 
     item2 = InboundTriageItem(
         id=uuid.uuid4(),
-        source="GMAIL_WORKER",
+        source="DEMO",
         sender="talent-team@stripe.com",
         subject="Update on your interview loop at Stripe",
         raw_body="Hello, our hiring committee has reviewed your profile and wanted to coordinate the upcoming technical interview rounds with our payments infrastructure engineering group.",
@@ -1013,6 +1018,29 @@ def seed_demo_attention_items(
 
     db.commit()
     return {"success": True, "seeded": 2}
+
+
+@app.post("/api/attention/clear-demo")
+def clear_demo_attention_items(
+    db: Session = Depends(get_db),
+):
+    """
+    Purges all demo/sample triage items from the database.
+    """
+    items = (
+        db.query(InboundTriageItem)
+        .filter(
+            (InboundTriageItem.source == "DEMO")
+            | (InboundTriageItem.sender.in_(["recruiting@bundltechnologies.com", "talent-team@stripe.com"]))
+        )
+        .all()
+    )
+    count = len(items)
+    for it in items:
+        db.delete(it)
+    db.commit()
+    return {"success": True, "deleted": count}
+
 
 
 # ==============================================================================

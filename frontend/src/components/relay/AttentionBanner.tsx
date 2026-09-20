@@ -53,20 +53,19 @@ export function AttentionBanner({
   const [selectedAppMap, setSelectedAppMap] = useState<Record<string, string>>({});
   const [selectedStageMap, setSelectedStageMap] = useState<Record<string, string>>({});
 
+  const isDemoMode =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("demo") === "true";
+
   // Load items from live backend queue
   async function loadAttentionQueue() {
     try {
       setIsLoading(true);
-      const data = await fetchAttentionItems();
-      
-      // If empty and URL has ?demo=true, auto-seed realistic sample ambiguous emails
-      const isDemoMode =
-        typeof window !== "undefined" &&
-        new URLSearchParams(window.location.search).get("demo") === "true";
+      const data = await fetchAttentionItems(isDemoMode);
 
       if (data.length === 0 && isDemoMode) {
         await seedDemoAttention();
-        const seeded = await fetchAttentionItems();
+        const seeded = await fetchAttentionItems(true);
         setItems(seeded);
       } else {
         setItems(data);
@@ -82,9 +81,21 @@ export function AttentionBanner({
     loadAttentionQueue();
   }, []);
 
+  // Filter out demo-seeded items unless ?demo=true is present in the URL
+  const displayItems = items.filter((it) => {
+    if (it.source === "DEMO") return isDemoMode;
+    if (
+      it.sender === "recruiting@bundltechnologies.com" ||
+      it.sender === "talent-team@stripe.com"
+    ) {
+      return isDemoMode;
+    }
+    return true;
+  });
+
   // Safe current index clamp
-  const safeIndex = items.length > 0 ? Math.min(currentIndex, items.length - 1) : 0;
-  const currentItem = items[safeIndex];
+  const safeIndex = displayItems.length > 0 ? Math.min(currentIndex, displayItems.length - 1) : 0;
+  const currentItem = displayItems[safeIndex];
 
   // Derive candidate applications for a given item
   function getCandidateApps(item: AttentionItem): { id: string; company: string; role: string }[] {
@@ -344,8 +355,8 @@ export function AttentionBanner({
     );
   }
 
-  // If no items in queue, return null
-  if (items.length === 0) return null;
+  // If no items in queue to display, return null
+  if (displayItems.length === 0) return null;
 
   return (
     <div className="relative mb-3">
@@ -358,7 +369,7 @@ export function AttentionBanner({
         >
           <AlertTriangle className="size-4 text-warning shrink-0 animate-pulse" />
           <span className="text-xs font-bold tracking-tight text-warning">
-            Action Required: Inbound Correspondence ({safeIndex + 1} of {items.length})
+            Action Required: Inbound Correspondence ({safeIndex + 1} of {displayItems.length})
           </span>
           <ChevronDown
             className={cn(
@@ -370,7 +381,7 @@ export function AttentionBanner({
 
         {/* Header Controls: Stack navigation & List View toggle */}
         <div className="flex items-center gap-1.5">
-          {items.length > 1 && viewMode === "deck" && (
+          {displayItems.length > 1 && viewMode === "deck" && (
             <div className="flex items-center gap-0.5 bg-surface/70 px-1 py-0.5 rounded border border-border/60">
               <button
                 type="button"
@@ -382,12 +393,12 @@ export function AttentionBanner({
                 <ChevronLeft className="size-3.5" />
               </button>
               <span className="text-[11px] font-mono px-1 font-semibold text-foreground/80">
-                {safeIndex + 1}/{items.length}
+                {safeIndex + 1}/{displayItems.length}
               </span>
               <button
                 type="button"
-                onClick={() => setCurrentIndex((idx) => Math.min(items.length - 1, idx + 1))}
-                disabled={safeIndex === items.length - 1}
+                onClick={() => setCurrentIndex((idx) => Math.min(displayItems.length - 1, idx + 1))}
+                disabled={safeIndex === displayItems.length - 1}
                 title="Next correspondence"
                 className="p-1 rounded text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed"
               >
@@ -396,7 +407,7 @@ export function AttentionBanner({
             </div>
           )}
 
-          {items.length > 1 && (
+          {displayItems.length > 1 && (
             <button
               type="button"
               onClick={() => setViewMode((m) => (m === "deck" ? "list" : "deck"))}
@@ -406,7 +417,7 @@ export function AttentionBanner({
               {viewMode === "deck" ? (
                 <>
                   <ListFilter className="size-3" />
-                  <span>Show All ({items.length})</span>
+                  <span>Show All ({displayItems.length})</span>
                 </>
               ) : (
                 <>
@@ -428,7 +439,7 @@ export function AttentionBanner({
             /* ============================================================== */
             <div className="relative pt-1 pb-4">
               {/* Layer 2 Shadow Card (3rd in queue) */}
-              {items.length > safeIndex + 2 && (
+              {displayItems.length > safeIndex + 2 && (
                 <div
                   className="absolute inset-x-3 top-5 h-20 rounded-b-lg border border-warning/20 bg-warning/5 dark:bg-warning/10 opacity-40 transform translate-y-3 scale-[0.96] transition-all duration-300 pointer-events-none z-0"
                   aria-hidden="true"
@@ -436,7 +447,7 @@ export function AttentionBanner({
               )}
 
               {/* Layer 1 Shadow Card (2nd in queue) */}
-              {items.length > safeIndex + 1 && (
+              {displayItems.length > safeIndex + 1 && (
                 <div
                   className="absolute inset-x-1.5 top-3 h-20 rounded-b-lg border border-warning/30 bg-warning/10 dark:bg-warning/15 opacity-70 transform translate-y-1.5 scale-[0.98] transition-all duration-300 pointer-events-none z-10"
                   aria-hidden="true"
@@ -454,9 +465,9 @@ export function AttentionBanner({
               </div>
 
               {/* Queue Depth Hint */}
-              {items.length > 3 && (
+              {displayItems.length > 3 && (
                 <div className="text-center pt-2 text-[10px] text-muted-foreground font-mono">
-                  +{items.length - 1} more ambiguous inbound messages in queue
+                  +{displayItems.length - 1} more ambiguous inbound messages in queue
                 </div>
               )}
             </div>
@@ -469,7 +480,7 @@ export function AttentionBanner({
                 className="max-h-[520px] overflow-y-auto pr-1 space-y-3 scrollbar-thin scrollbar-thumb-warning/30 hover:scrollbar-thumb-warning/50 transition-colors"
                 style={{ scrollbarGutter: "stable" }}
               >
-                {items.map((item, idx) => (
+                {displayItems.map((item, idx) => (
                   <div
                     key={item.id}
                     className="rounded-lg border border-warning/35 bg-background/95 shadow-sm overflow-hidden"
