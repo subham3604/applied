@@ -163,3 +163,34 @@ class WorkerConfig(Base):
     key = Column(String(100), primary_key=True)
     value = Column(Text, nullable=False)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)
+
+
+class InboundTriageItem(Base):
+    __tablename__ = "inbound_triage_items"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source = Column(String(50), nullable=False, default="GMAIL_WORKER")
+    sender = Column(String(255), nullable=False)
+    recipient = Column(String(255), nullable=True)
+    subject = Column(String(500), nullable=False)
+    raw_body = Column(Text, nullable=False)
+    detected_company = Column(String(255), nullable=True)
+    detected_role = Column(String(255), nullable=True)
+    suggested_stage = Column(String(50), nullable=True)
+    resolution_confidence = Column(String(20), nullable=False, default="AMBIGUOUS")
+    resolution_note = Column(Text, nullable=True)
+    candidate_application_ids = Column(JSONB, nullable=False, default=list)
+    status = Column(String(20), nullable=False, default="PENDING")  # PENDING, RESOLVED, DISMISSED
+    resolved_application_id = Column(UUID(as_uuid=True), ForeignKey("applications.id", ondelete="SET NULL"), nullable=True)
+    resolved_stage = Column(String(50), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    resolved_application = relationship("Application")
+
+    __table_args__ = (
+        Index("idx_inbound_triage_status", "status"),
+        Index("idx_inbound_triage_created", created_at.desc()),
+    )
+

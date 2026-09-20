@@ -628,8 +628,48 @@ def node_commit_and_log(state: AgentState) -> Dict[str, Any]:
             logger.warning("Error persisting commit and log to DB: %s", exc)
             committed = True
     else:
-        # e.g. Flag for manual without single matched application
-        committed = True
+        # e.g. Flag for manual without single matched application -> Persist to InboundTriageItem queue
+        try:
+            from db.models import InboundTriageItem
+            with _get_db_session(state) as session:
+                if session is not None:
+                    parsed = state.get("parsed_event") or {}
+                    detected_company = parsed.get("company_name")
+                    detected_role = parsed.get("role_title")
+                    suggested_stage = state.get("target_status") or parsed.get("stage")
+                    confidence = state.get("resolution_confidence") or "AMBIGUOUS"
+                    note = state.get("resolution_note") or "Flagged for manual disambiguation"
+
+                    # Collect candidate application IDs
+                    candidate_apps = state.get("candidate_apps") or []
+                    candidate_ids = []
+                    for c in candidate_apps:
+                        if isinstance(c, dict) and c.get("id"):
+                            candidate_ids.append(str(c["id"]))
+                        elif hasattr(c, "id"):
+                            candidate_ids.append(str(c.id))
+
+                    triage_item = InboundTriageItem(
+                        id=uuid.uuid4(),
+                        source="GMAIL_WORKER",
+                        sender=state.get("sender") or "unknown@sender.com",
+                        subject=state.get("subject") or "Inbound Notification",
+                        raw_body=state.get("raw_email_text") or "",
+                        detected_company=detected_company,
+                        detected_role=detected_role,
+                        suggested_stage=suggested_stage,
+                        resolution_confidence=confidence,
+                        resolution_note=note,
+                        candidate_application_ids=candidate_ids,
+                        status="PENDING",
+                        created_at=datetime.now(timezone.utc),
+                    )
+                    session.add(triage_item)
+                    session.flush()
+            committed = True
+        except Exception as exc:
+            logger.warning("Error persisting inbound triage item to DB: %s", exc)
+            committed = True
 
     return {
         "committed": committed,

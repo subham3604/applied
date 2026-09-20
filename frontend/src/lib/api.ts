@@ -209,5 +209,89 @@ export async function deleteVaultBullet(
   return res.json();
 }
 
+export interface CandidateApp {
+  id: string;
+  company: string;
+  role: string;
+  currentStatus: string;
+}
+
+export interface AttentionItem {
+  id: string;
+  source: string;
+  sender: string;
+  recipient?: string | null;
+  subject: string;
+  raw_body: string;
+  detected_company?: string | null;
+  detected_role?: string | null;
+  suggested_stage: string;
+  resolution_confidence: string;
+  resolution_note?: string | null;
+  candidate_applications: CandidateApp[];
+  status: string;
+  created_at: string;
+}
+
+export async function fetchAttentionItems(): Promise<AttentionItem[]> {
+  const res = await fetch(`${API_BASE}/api/attention`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Failed to fetch attention items: ${res.statusText}`);
+  return res.json();
+}
+
+export async function assignAttentionItem(
+  id: string,
+  applicationId: string,
+  newStatus: string,
+  note?: string
+): Promise<{ success: boolean; application_id: string; status: string }> {
+  const res = await fetch(`${API_BASE}/api/attention/${id}/assign`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ application_id: applicationId, new_status: newStatus, note: note || "" }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to assign attention item: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function createAppFromAttention(
+  id: string,
+  data: { company_name: string; role_title: string; status?: string; note?: string }
+): Promise<{ success: boolean; application_id: string }> {
+  const res = await fetch(`${API_BASE}/api/attention/${id}/create-application`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to create application from triage: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function dismissAttentionItem(id: string): Promise<{ success: boolean; dismissed_id: string }> {
+  const res = await fetch(`${API_BASE}/api/attention/${id}/dismiss`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to dismiss attention item: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function seedDemoAttention(): Promise<{ success: boolean }> {
+  const res = await fetch(`${API_BASE}/api/attention/seed-demo`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`Failed to seed demo attention: ${res.statusText}`);
+  return res.json();
+}
+
+
 
 

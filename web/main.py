@@ -28,8 +28,8 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
-from db.models import Application, ApplicationStatus, EventSource, MasterExperienceVault, PipelineEvent, ResumeSnapshot, WorkerConfig
-from db.session import SessionLocal
+from db.models import Application, ApplicationStatus, EventSource, InboundTriageItem, MasterExperienceVault, PipelineEvent, ResumeSnapshot, WorkerConfig
+from db.session import SessionLocal, Base, engine
 from web.queries import get_pipeline_metrics
 from web.services.pipeline import PipelineResult, process_raw_jd
 from web.services.rag_engine import embed_text
@@ -44,6 +44,14 @@ app = FastAPI(
     description="Backend API for the Relay autonomous job application tracker.",
     version="1.0.0",
 )
+
+@app.on_event("startup")
+def on_startup():
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception:
+        pass
+
 
 cors_origins_env = os.getenv("CORS_ORIGINS", "")
 allowed_origins = [
@@ -98,6 +106,20 @@ class OverrideStatusRequest(BaseModel):
 
 class TextUpdateRequest(BaseModel):
     raw_text: str
+
+
+class AssignTriageRequest(BaseModel):
+    application_id: str
+    new_status: str
+    note: Optional[str] = ""
+
+
+class CreateFromTriageRequest(BaseModel):
+    company_name: str
+    role_title: str
+    status: Optional[str] = "APPLIED"
+    note: Optional[str] = ""
+
 
 
 # ==============================================================================
@@ -700,9 +722,304 @@ def delete_vault_bullet(
 
 
 # ==============================================================================
+# Inbound Triage / Attention Required Endpoints
+# ==============================================================================
+
+def _serialize_triage_item(item: InboundTriageItem, db: Session) -> dict:
+    candidate_apps = []
+    if item.candidate_application_ids:
+        app_uuids = []
+        for cid in item.candidate_application_ids:
+            try:
+                app_uuids.append(uuid.UUID(str(cid)))
+            except Exception:
+                pass
+        if app_uuids:
+            apps = db.query(Application).filter(Application.id.in_(app_uuids)).all()
+            candidate_apps = [
+                {
+                    "id": str(a.id),
+                    "company": a.company_name,
+                    "role": a.role_title,
+                    "currentStatus": a.current_status.value,
+                }
+                for a in apps
+            ]
+
+    # Fallback to company name search if candidate_apps is empty
+    if not candidate_apps and item.detected_company:
+        term = f"%{item.detected_company.lower()}%"
+        apps = db.query(Application).filter(func.lower(Application.company_name).like(term)).all()
+        candidate_apps = [
+            {
+                "id": str(a.id),
+                "company": a.company_name,
+                "role": a.role_title,
+                "currentStatus": a.current_status.value,
+            }
+            for a in apps
+        ]
+
+    # If still none, suggest recent applications
+    if not candidate_apps:
+        apps = db.query(Application).order_by(Application.applied_at.desc()).limit(3).all()
+        candidate_apps = [
+            {
+                "id": str(a.id),
+                "company": a.company_name,
+                "role": a.role_title,
+                "currentStatus": a.current_status.value,
+            }
+            for a in apps
+        ]
+
+    return {
+        "id": str(item.id),
+        "source": item.source,
+        "sender": item.sender,
+        "recipient": item.recipient,
+        "subject": item.subject,
+        "raw_body": item.raw_body,
+        "detected_company": item.detected_company,
+        "detected_role": item.detected_role,
+        "suggested_stage": item.suggested_stage or "INTERVIEW_ROUND",
+        "resolution_confidence": item.resolution_confidence,
+        "resolution_note": item.resolution_note,
+        "candidate_applications": candidate_apps,
+        "status": item.status,
+        "created_at": item.created_at.isoformat() if item.created_at else "",
+    }
+
+
+@app.get("/api/attention")
+def get_attention_items(
+    db: Session = Depends(get_db),
+):
+    """
+    Returns all unresolved (PENDING) inbound items requiring user triage.
+    """
+    items = (
+        db.query(InboundTriageItem)
+        .filter(InboundTriageItem.status == "PENDING")
+        .order_by(InboundTriageItem.created_at.desc())
+        .all()
+    )
+    return [_serialize_triage_item(item, db) for item in items]
+
+
+@app.post("/api/attention/{id}/assign")
+def assign_attention_item(
+    id: str,
+    req: AssignTriageRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Assigns an ambiguous inbound item to an existing application, updates application
+    status, and appends a verified PipelineEvent audit row.
+    """
+    try:
+        item_uuid = uuid.UUID(id)
+        app_uuid = uuid.UUID(req.application_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID format.")
+
+    item = db.query(InboundTriageItem).filter(InboundTriageItem.id == item_uuid).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Triage item not found.")
+
+    target_app = db.query(Application).filter(Application.id == app_uuid).first()
+    if not target_app:
+        raise HTTPException(status_code=404, detail="Target application not found.")
+
+    try:
+        new_status_enum = ApplicationStatus(req.new_status)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid status '{req.new_status}'. Allowed: {[s.value for s in ApplicationStatus]}",
+        )
+
+    # 1. Insert immutable PipelineEvent
+    event_note = req.note or (
+        f"User disambiguated inbound email from '{item.sender}' ({item.subject}) "
+        f"and assigned to {target_app.company_name} ({target_app.role_title}) -> {new_status_enum.value}."
+    )
+    event = PipelineEvent(
+        id=uuid.uuid4(),
+        application_id=target_app.id,
+        from_status=target_app.current_status,
+        to_status=new_status_enum,
+        source=EventSource.GMAIL_WORKER,
+        raw_payload=item.raw_body,
+        resolution_note=event_note,
+        llm_confidence="HIGH",
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(event)
+
+    # 2. Advance target application status
+    target_app.current_status = new_status_enum
+    target_app.updated_at = datetime.now(timezone.utc)
+    db.add(target_app)
+
+    # 3. Mark triage item as RESOLVED
+    item.status = "RESOLVED"
+    item.resolved_application_id = target_app.id
+    item.resolved_stage = new_status_enum.value
+    item.resolved_at = datetime.now(timezone.utc)
+    db.add(item)
+
+    db.commit()
+    return {"success": True, "application_id": str(target_app.id), "status": new_status_enum.value}
+
+
+@app.post("/api/attention/{id}/create-application")
+def create_application_from_attention(
+    id: str,
+    req: CreateFromTriageRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Creates a new Application from the triage item, appends initial PipelineEvent,
+    and marks the triage item as RESOLVED.
+    """
+    try:
+        item_uuid = uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID format.")
+
+    item = db.query(InboundTriageItem).filter(InboundTriageItem.id == item_uuid).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Triage item not found.")
+
+    status_val = req.status or "APPLIED"
+    try:
+        status_enum = ApplicationStatus(status_val)
+    except ValueError:
+        status_enum = ApplicationStatus.APPLIED
+
+    canonical_company = re.sub(r"[^\w\s]", "", req.company_name).strip().lower()
+    new_app = Application(
+        id=uuid.uuid4(),
+        company_name=req.company_name.strip(),
+        canonical_company_name=canonical_company,
+        role_title=req.role_title.strip(),
+        source_platform="Inbound Email",
+        job_description_raw=item.raw_body,
+        primary_tech_stack=[],
+        current_status=status_enum,
+        applied_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    db.add(new_app)
+    db.flush()
+
+    event = PipelineEvent(
+        id=uuid.uuid4(),
+        application_id=new_app.id,
+        from_status=None,
+        to_status=status_enum,
+        source=EventSource.GMAIL_WORKER,
+        raw_payload=item.raw_body,
+        resolution_note=req.note or f"Created new application from inbound email '{item.subject}' ({item.sender}).",
+        llm_confidence="HIGH",
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(event)
+
+    item.status = "RESOLVED"
+    item.resolved_application_id = new_app.id
+    item.resolved_stage = status_enum.value
+    item.resolved_at = datetime.now(timezone.utc)
+    db.add(item)
+
+    db.commit()
+    db.refresh(new_app)
+    return {"success": True, "application_id": str(new_app.id)}
+
+
+@app.post("/api/attention/{id}/dismiss")
+def dismiss_attention_item(
+    id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Dismisses an ambiguous triage item without modifying any applications.
+    """
+    try:
+        item_uuid = uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID format.")
+
+    item = db.query(InboundTriageItem).filter(InboundTriageItem.id == item_uuid).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Triage item not found.")
+
+    item.status = "DISMISSED"
+    item.resolved_at = datetime.now(timezone.utc)
+    db.add(item)
+    db.commit()
+    return {"success": True, "dismissed_id": str(item.id)}
+
+
+@app.post("/api/attention/seed-demo")
+def seed_demo_attention_items(
+    db: Session = Depends(get_db),
+):
+    """
+    Seeds initial realistic ambiguous triage items (Bundl/Swiggy, Stripe, Datadog)
+    if no pending items exist, or adds demo items for verification.
+    """
+    existing = db.query(InboundTriageItem).filter(InboundTriageItem.status == "PENDING").count()
+    if existing > 0:
+        return {"success": True, "message": f"{existing} pending triage items already exist."}
+
+    swiggy_apps = db.query(Application).filter(func.lower(Application.company_name).like("%swiggy%")).all()
+    swiggy_ids = [str(a.id) for a in swiggy_apps]
+
+    item1 = InboundTriageItem(
+        id=uuid.uuid4(),
+        source="GMAIL_WORKER",
+        sender="recruiting@bundltechnologies.com",
+        subject="Next steps regarding your application at Bundl Technologies (Swiggy)",
+        raw_body="Hi candidate, thank you for your application to Bundl Technologies (Swiggy). We were impressed with your engineering background and would like to schedule a technical discussion regarding your candidacy. Please confirm which application and stage to update.",
+        detected_company="Bundl Technologies",
+        detected_role="Full Stack Engineer",
+        suggested_stage="INTERVIEW_ROUND",
+        resolution_confidence="AMBIGUOUS",
+        resolution_note="Multiple active applications found under alias 'Bundl Technologies / Swiggy'. Needs user disambiguation.",
+        candidate_application_ids=swiggy_ids,
+        status="PENDING",
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(item1)
+
+    item2 = InboundTriageItem(
+        id=uuid.uuid4(),
+        source="GMAIL_WORKER",
+        sender="talent-team@stripe.com",
+        subject="Update on your interview loop at Stripe",
+        raw_body="Hello, our hiring committee has reviewed your profile and wanted to coordinate the upcoming technical interview rounds with our payments infrastructure engineering group.",
+        detected_company="Stripe",
+        detected_role="Software Engineer - Infrastructure",
+        suggested_stage="INTERVIEW_ROUND",
+        resolution_confidence="AMBIGUOUS",
+        resolution_note="Sender domain matches Stripe, but application role title differs between Backend Engineer and Infrastructure Engineer.",
+        candidate_application_ids=[],
+        status="PENDING",
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(item2)
+
+    db.commit()
+    return {"success": True, "seeded": 2}
+
+
+# ==============================================================================
 # Health check — used by Docker healthcheck and Caddy upstream probes
 # ==============================================================================
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
