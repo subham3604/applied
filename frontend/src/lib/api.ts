@@ -61,6 +61,16 @@ export async function fetchWorkerStatus(): Promise<WorkerStatus> {
   return res.json();
 }
 
+export async function triggerWorkerSync(): Promise<{ success: boolean; summary: any }> {
+  const res = await fetch(`${API_BASE}/api/worker/sync`, { method: "POST" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || "Failed to trigger sync");
+  }
+  return res.json();
+}
+
+
 export async function fetchApplications(): Promise<Application[]> {
   const res = await fetch(`${API_BASE}/api/applications`, { cache: "no-store" });
   if (!res.ok) throw new Error(`Failed to fetch applications: ${res.statusText}`);

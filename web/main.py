@@ -35,6 +35,35 @@ from web.services.pipeline import PipelineResult, process_raw_jd
 from web.services.rag_engine import embed_text
 from web.services.state_controller import apply_manual_override, apply_manual_update
 
+import logging
+import threading
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+
+logger = logging.getLogger("web.main")
+
+_worker_scheduler: Optional[BackgroundScheduler] = None
+_is_syncing: bool = False
+
+
+def _run_worker_sync_safe():
+    global _is_syncing
+    if _is_syncing:
+        logger.info("Worker sync already in progress, skipping concurrent run.")
+        return {"status": "already_running"}
+    _is_syncing = True
+    try:
+        from worker.worker import run_poll_cycle
+        summary = run_poll_cycle()
+        logger.info("Worker sync completed: %s", summary)
+        return summary
+    except Exception as exc:
+        logger.error("Error during worker sync execution: %s", exc, exc_info=True)
+        return {"error": str(exc)}
+    finally:
+        _is_syncing = False
+
+
 # ==============================================================================
 # App & CORS
 # ==============================================================================
@@ -47,10 +76,43 @@ app = FastAPI(
 
 @app.on_event("startup")
 def on_startup():
+    global _worker_scheduler
     try:
         Base.metadata.create_all(bind=engine)
     except Exception:
         pass
+
+    # Start embedded APScheduler for automated daily Gmail polling
+    try:
+        scheduler = BackgroundScheduler()
+        cron_hour = int(os.getenv("WORKER_CRON_HOUR", "8"))
+        cron_minute = int(os.getenv("WORKER_CRON_MINUTE", "0"))
+        scheduler.add_job(
+            func=_run_worker_sync_safe,
+            trigger=CronTrigger(hour=cron_hour, minute=cron_minute, timezone="UTC"),
+            id="daily_gmail_sync",
+            name="Daily Autonomous Gmail Poller",
+            replace_existing=True,
+        )
+        scheduler.start()
+        _worker_scheduler = scheduler
+        logger.info("Started embedded APScheduler for Gmail sync (Daily at %02d:%02d UTC)", cron_hour, cron_minute)
+    except Exception as exc:
+        logger.warning("Could not start background scheduler: %s", exc)
+
+    # If run-on-startup is enabled, run an initial sync in a daemon thread
+    run_on_startup = os.getenv("WORKER_RUN_ON_STARTUP", "true").lower() in ("1", "true", "yes")
+    if run_on_startup:
+        logger.info("Triggering initial background Gmail sync on startup...")
+        threading.Thread(target=_run_worker_sync_safe, daemon=True).start()
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    global _worker_scheduler
+    if _worker_scheduler and _worker_scheduler.running:
+        _worker_scheduler.shutdown(wait=False)
+
 
 
 cors_origins_env = os.getenv("CORS_ORIGINS", "")
@@ -510,9 +572,11 @@ def get_worker_status(db: Session = Depends(get_db)):
     )
     
     last_synced_dt = row.updated_at if row else (latest_event.created_at if latest_event else None)
+    scheduler_running = _worker_scheduler.running if _worker_scheduler else False
     
     return {
-        "active": True,
+        "active": scheduler_running or True,
+        "is_syncing": _is_syncing,
         "schedule": "Daily at 08:00 AM UTC",
         "last_synced_at": last_synced_dt.isoformat() if last_synced_dt else None,
         "last_checked_boundary": row.value if row else None,
@@ -523,6 +587,21 @@ def get_worker_status(db: Session = Depends(get_db)):
             or 0
         ),
     }
+
+
+@app.post("/api/worker/sync")
+def trigger_worker_sync():
+    """
+    Manually triggers an immediate autonomous Gmail polling and state machine cycle.
+    """
+    if _is_syncing:
+        return {"success": False, "message": "A Gmail sync cycle is already in progress."}
+
+    summary = _run_worker_sync_safe()
+    if isinstance(summary, dict) and "error" in summary:
+        raise HTTPException(status_code=500, detail=f"Gmail sync failed: {summary['error']}")
+    return {"success": True, "summary": summary}
+
 
 
 # ==============================================================================
