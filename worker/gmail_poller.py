@@ -14,6 +14,7 @@ import base64
 import logging
 import re
 from datetime import datetime, timedelta, timezone
+import html
 from html.parser import HTMLParser
 from typing import List, Optional, Tuple
 
@@ -41,26 +42,54 @@ class _HTMLTextExtractor(HTMLParser):
     def __init__(self):
         super().__init__()
         self.result = []
+        self._ignore_tags = {"style", "script", "head", "noscript", "svg", "meta", "title"}
+        self._ignore_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        tag_lower = tag.lower()
+        if tag_lower in self._ignore_tags:
+            self._ignore_depth += 1
+        elif tag_lower in ("p", "div", "br", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6"):
+            self.result.append("\n")
+
+    def handle_endtag(self, tag):
+        tag_lower = tag.lower()
+        if tag_lower in self._ignore_tags:
+            if self._ignore_depth > 0:
+                self._ignore_depth -= 1
+        elif tag_lower in ("p", "div", "tr", "li"):
+            self.result.append("\n")
 
     def handle_data(self, d):
-        self.result.append(d)
+        if self._ignore_depth == 0:
+            self.result.append(d)
 
     def get_text(self) -> str:
-        return " ".join("".join(self.result).split())
+        raw = "".join(self.result)
+        lines = [line.strip() for line in raw.splitlines()]
+        cleaned = "\n".join(line for line in lines if line)
+        return html.unescape(cleaned)
 
 
 def _strip_html(html_str: str) -> str:
-    """Strips HTML tags and normalizes whitespace."""
+    """Strips HTML tags, styles, scripts, and normalizes whitespace."""
     if not html_str:
         return ""
+    # Pre-strip script, style, head blocks for safety
+    cleaned_html = re.sub(
+        r"<(script|style|head|noscript)[\s\S]*?</\1>",
+        " ",
+        html_str,
+        flags=re.IGNORECASE,
+    )
     try:
         parser = _HTMLTextExtractor()
-        parser.feed(html_str)
+        parser.feed(cleaned_html)
         return parser.get_text()
     except Exception:
         # Fallback to regex tag stripping
-        clean = re.sub(r"<[^>]+>", " ", html_str)
-        return " ".join(clean.split())
+        clean = re.sub(r"<[^>]+>", " ", cleaned_html)
+        return html.unescape(" ".join(clean.split()))
 
 
 # ==============================================================================
@@ -130,9 +159,11 @@ def _extract_body_parts(payload: dict) -> Tuple[str, Optional[str]]:
     plain_text = "\n".join(plain_parts).strip()
     html_text = "\n".join(html_parts).strip() if html_parts else None
 
-    # If plaintext is empty but HTML exists, derive plaintext from HTML
+    # If plaintext is empty or looks like raw HTML, derive plaintext from HTML or strip it
     if not plain_text and html_text:
         plain_text = _strip_html(html_text)
+    elif plain_text and ("<html" in plain_text.lower() or "<div" in plain_text.lower() or "<style" in plain_text.lower() or "<table" in plain_text.lower()):
+        plain_text = _strip_html(plain_text)
 
     return plain_text, html_text
 
@@ -160,10 +191,19 @@ def parse_gmail_message(raw_msg: dict) -> EmailMessage:
 
     # Parse timestamp from internalDate (ms since epoch) or Date header
     received_at = datetime.now(timezone.utc)
-    if "internaldate" in raw_msg:
+    internal_val = raw_msg.get("internalDate") or raw_msg.get("internaldate")
+    if internal_val:
         try:
-            ms = int(raw_msg["internalDate"])
+            ms = int(internal_val)
             received_at = datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
+        except Exception:
+            pass
+    elif "date" in headers:
+        try:
+            import email.utils
+            parsed_tuple = email.utils.parsedate_to_datetime(headers["date"])
+            if parsed_tuple:
+                received_at = parsed_tuple.astimezone(timezone.utc)
         except Exception:
             pass
 

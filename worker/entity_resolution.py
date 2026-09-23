@@ -172,8 +172,6 @@ def role_disambiguate(
         cand_role = cand.role_title.lower().strip()
         if role_clean == cand_role:
             score = 1.0
-        elif role_clean in cand_role or cand_role in role_clean:
-            score = 0.95
         else:
             score = Levenshtein.ratio(role_clean, cand_role)
         scored_candidates.append((score, cand))
@@ -209,26 +207,139 @@ Active Applications List:
 {applications_list}
 
 RULES:
-1. Indian Tech Corporate Entities: Recognize legal corporate identities (e.g. 'Bundl Technologies Pvt Ltd' is the legal operating company of 'Swiggy', 'Zomato Media Private Limited' is 'Zomato', 'One97 Communications' is 'Paytm').
-2. Matching:
-   - If the email belongs to one of the active applications, return that exact application_id.
-   - If the email is clearly for a new application not in the list, return "NEW".
-   - If multiple roles exist at the company and the email lacks sufficient detail to determine which one with certainty, return "AMBIGUOUS".
-3. Anti-Hallucination: Do NOT guess or fabricate application IDs. If uncertain, you MUST return "AMBIGUOUS".
+1. Corporate Entities: Recognize legal corporate identities and subsidiaries (e.g. 'Bundl Technologies' is 'Swiggy', 'Zomato Media' is 'Zomato', 'A.P Moller-Maersk' is 'Maersk').
+2. Distinct Job Roles:
+   - If the company matches an existing application, but the job role is a distinct position (for example, different track, focus, specialization, or seniority such as 'AI/ML Engineer' vs 'AI/ML Engineer (Data Engineering + AI Focus)', or 'Backend Engineer' vs 'Frontend Engineer'), this represents a SEPARATE application: return "NEW".
+   - Only match an existing application if the role is the SAME job opening (allowing minor differences in punctuation or casing).
+3. Ambiguity: If multiple roles exist at the company and the email lacks sufficient detail to determine which one with certainty, return "AMBIGUOUS".
+4. Anti-Hallucination: Do NOT guess or fabricate application IDs. If uncertain, you MUST return "AMBIGUOUS".
 """
 
-# Common Indian tech legal entity alias registry (for fast deterministic & offline matching)
-CORPORATE_ENTITY_ALIASES = {
-    "bundl": "swiggy",
-    "bundl technologies": "swiggy",
-    "zomato media": "zomato",
-    "one97": "paytm",
-    "one97 communications": "paytm",
-    "alphabet": "google",
-    "meta": "facebook",
-    "walmart global tech": "walmart",
-    "quon": "quon labs",
-}
+# ==============================================================================
+# Dynamic Entity Alias Cache & Constrained Web Search
+# ==============================================================================
+
+class EntityAliasCache:
+    """
+    Dynamic persistent alias store mapping sender domains, subsidiary names,
+    or legal entities to their canonical company names.
+    Backed by in-memory storage and persisted to PostgreSQL WorkerConfig ('entity_aliases').
+    """
+    _cache: dict = {}
+    _loaded: bool = False
+
+    @classmethod
+    def load_from_db(cls, db_session=None):
+        if cls._loaded and not db_session:
+            return
+        if db_session:
+            try:
+                from db.models import WorkerConfig
+                import json
+                rec = db_session.query(WorkerConfig).filter(WorkerConfig.key == "entity_aliases").first()
+                if rec and rec.value:
+                    data = json.loads(rec.value)
+                    if isinstance(data, dict):
+                        cls._cache.update(data)
+                cls._loaded = True
+            except Exception as e:
+                logger.debug("Could not load entity aliases from DB: %s", e)
+
+    @classmethod
+    def get(cls, key: str, db_session=None) -> Optional[str]:
+        if not key:
+            return None
+        cls.load_from_db(db_session)
+        norm = normalize_company_name(key)
+        raw_clean = key.lower().strip()
+        return cls._cache.get(norm) or cls._cache.get(raw_clean)
+
+    @classmethod
+    def set(cls, key: str, canonical_company: str, db_session=None):
+        if not key or not canonical_company:
+            return
+        norm_key = normalize_company_name(key)
+        raw_clean = key.lower().strip()
+        canonical_clean = canonical_company.strip()
+        cls._cache[norm_key] = canonical_clean
+        cls._cache[raw_clean] = canonical_clean
+        if db_session:
+            try:
+                from db.models import WorkerConfig
+                import json
+                rec = db_session.query(WorkerConfig).filter(WorkerConfig.key == "entity_aliases").first()
+                if not rec:
+                    rec = WorkerConfig(key="entity_aliases", value=json.dumps(cls._cache))
+                    db_session.add(rec)
+                else:
+                    rec.value = json.dumps(cls._cache)
+                db_session.commit()
+            except Exception as e:
+                logger.warning("Could not persist entity alias to DB: %s", e)
+                db_session.rollback()
+
+
+def lookup_company_web(domain_or_name: str, max_results: int = 3) -> str:
+    """
+    Constrained web search for unknown or cryptic company / sender domains.
+    Constraints:
+    - Max 3 results
+    - Max 150 chars per snippet
+    - Excludes noisy job boards (linkedin.com, indeed.com, glassdoor.com, naukri.com)
+    - Returns structured markdown string or empty string on failure
+    """
+    if not domain_or_name or not domain_or_name.strip():
+        return ""
+
+    clean_term = domain_or_name.strip()
+    if "@" in clean_term:
+        clean_term = clean_term.split("@")[-1].strip()
+
+    query = f'"{clean_term}" company operating brand parent organization'
+    blocked_domains = ("linkedin.com", "indeed.com", "glassdoor.com", "naukri.com", "ziprecruiter.com")
+    results = []
+
+    # 1. Try googlesearch-python if installed
+    try:
+        from googlesearch import search
+        for res in search(query, num_results=10, advanced=True):
+            url = getattr(res, "url", "")
+            title = getattr(res, "title", "")
+            desc = getattr(res, "description", "")
+            if any(b in url.lower() for b in blocked_domains):
+                continue
+            snippet = (desc or title or "").strip()[:150]
+            if snippet:
+                results.append(f"{len(results)+1}. [{title}]: {snippet}")
+            if len(results) >= max_results:
+                break
+    except Exception as exc:
+        logger.debug("googlesearch lookup failed: %s", exc)
+
+    # 2. Fallback to DuckDuckGo Lite if needed
+    if not results:
+        try:
+            import urllib.parse
+            import urllib.request
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            q_enc = urllib.parse.quote(query)
+            req = urllib.request.Request(f"https://lite.duckduckgo.com/lite/?q={q_enc}", headers=headers)
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                html = resp.read().decode("utf-8", errors="ignore")
+                tds = re.findall(r'<td class=[\'"]result-snippet[\'"]>(.*?)</td>', html, re.DOTALL)
+                for t in tds[:max_results]:
+                    clean = re.sub(r'<.*?>', '', t).strip()[:150]
+                    if clean:
+                        results.append(f"{len(results)+1}. {clean}")
+        except Exception as ddg_exc:
+            logger.debug("DuckDuckGo lookup failed: %s", ddg_exc)
+
+    if not results:
+        return ""
+
+    return f"Verified Web Lookup (Query: \"{query}\"):\n" + "\n".join(results)
 
 
 def _get_instructor_client():
@@ -255,13 +366,13 @@ def _heuristic_arbitrate(
     """
     comp_norm = normalize_company_name(company_raw)
 
-    # 1. Check corporate alias dictionary
-    target_brand = CORPORATE_ENTITY_ALIASES.get(comp_norm) or CORPORATE_ENTITY_ALIASES.get(company_raw.lower().strip())
+    # 1. Check dynamic entity alias cache
+    target_brand = EntityAliasCache.get(company_raw)
     if target_brand:
         matching_by_alias = [
             c for c in candidates
-            if normalize_company_name(c.company_name) == target_brand
-            or (c.canonical_company_name and normalize_company_name(c.canonical_company_name) == target_brand)
+            if normalize_company_name(c.company_name) == normalize_company_name(target_brand)
+            or (c.canonical_company_name and normalize_company_name(c.canonical_company_name) == normalize_company_name(target_brand))
         ]
         if len(matching_by_alias) == 1:
             return matching_by_alias[0].id, f"Resolved via corporate entity alias: '{company_raw}' -> '{matching_by_alias[0].company_name}'"
@@ -278,6 +389,12 @@ def _heuristic_arbitrate(
         or (c.canonical_company_name and normalize_company_name(c.canonical_company_name) == comp_norm)
     ]
     if len(matching_cands) == 1:
+        if role_raw:
+            best_cand, score = role_disambiguate(role_raw, matching_cands)
+            if best_cand and score >= ROLE_FUZZY_THRESHOLD:
+                return best_cand.id, f"Matched single candidate with compatible role ({score:.2f})"
+            else:
+                return "NEW", f"Distinct role '{role_raw}' vs existing '{matching_cands[0].role_title}' ({score:.2f})"
         return matching_cands[0].id, "Matched single candidate"
     elif len(matching_cands) > 1:
         if role_raw:
@@ -324,6 +441,14 @@ def llm_arbitrate(
         applications_list=apps_formatted,
     )
 
+    # If company has no direct name match in candidates, augment with constrained web search
+    comp_norm = normalize_company_name(company_raw)
+    has_exact = any(normalize_company_name(c.company_name) == comp_norm for c in candidates)
+    if not has_exact:
+        web_snippet = lookup_company_web(company_raw, max_results=3)
+        if web_snippet:
+            user_prompt += f"\n\nExternal Entity Context:\n{web_snippet}\n"
+
     try:
         decision_obj = instructor_client.chat.completions.create(
             model=model,
@@ -338,7 +463,12 @@ def llm_arbitrate(
         dec = decision_obj.decision.strip()
         # Verify valid application ID was returned or recognized keyword
         valid_ids = {c.id for c in candidates}
-        if dec in valid_ids or dec in ["NEW", "AMBIGUOUS"]:
+        if dec in valid_ids:
+            matched_cand = next((c for c in candidates if c.id == dec), None)
+            if matched_cand:
+                EntityAliasCache.set(company_raw, matched_cand.company_name)
+            return dec, decision_obj.reason
+        elif dec in ["NEW", "AMBIGUOUS"]:
             return dec, decision_obj.reason
 
         # Anti-hallucination guard: if model returned an unrecognized ID, force AMBIGUOUS
@@ -413,15 +543,16 @@ def resolve_entity(
         ResolutionResult with action (UPDATE, CREATE_NEW, or FLAG_FOR_MANUAL),
         matched_application_id, confidence, note, and matched candidate.
     """
-    if not company_raw or not company_raw.strip():
+    if not company_raw or not company_raw.strip() or company_raw.lower().strip() in ("unknown company", "unknown", "workday", "myworkday", "hire", "recruiting"):
         return ResolutionResult(
-            action=ResolutionAction.CREATE_NEW,
-            confidence=ResolutionConfidence.NONE,
-            note="No company provided; creating new record.",
+            action=ResolutionAction.FLAG_FOR_MANUAL,
+            confidence=ResolutionConfidence.AMBIGUOUS,
+            note=f"Unrecognized or generic company name '{company_raw}'; quarantined for manual assignment.",
         )
 
     comp_norm = normalize_company_name(company_raw)
-    target_alias = CORPORATE_ENTITY_ALIASES.get(comp_norm) or CORPORATE_ENTITY_ALIASES.get(company_raw.lower().strip())
+    target_alias = EntityAliasCache.get(company_raw)
+    target_alias_norm = normalize_company_name(target_alias) if target_alias else None
 
     # --------------------------------------------------------------------------
     # Step 1: Filter candidates by company (Normalized exact, alias, or Levenshtein >= 0.85)
@@ -433,7 +564,7 @@ def resolve_entity(
 
         if comp_norm in [cand_norm, canon_norm]:
             company_matches.append(cand)
-        elif target_alias and target_alias in [cand_norm, canon_norm]:
+        elif target_alias_norm and target_alias_norm in [cand_norm, canon_norm]:
             company_matches.append(cand)
         elif Levenshtein.ratio(comp_norm, cand_norm) >= FUZZY_RATIO_THRESHOLD:
             company_matches.append(cand)
@@ -491,8 +622,8 @@ def resolve_entity(
         # If role is provided, verify it doesn't clearly conflict with a different role
         if role_title:
             _, score = role_disambiguate(role_title, [cand])
-            # If role is completely different, check with LLM if this is a new application at same company
-            if score < 0.35 and len(role_title.split()) > 1:
+            # If role doesn't match existing role (score < 0.70), arbitrate whether this is a new application at same company
+            if score < ROLE_FUZZY_THRESHOLD and len(role_title.split()) > 0:
                 decision, reason = llm_arbitrate(
                     company_raw=company_raw,
                     role_raw=role_title,
@@ -504,7 +635,13 @@ def resolve_entity(
                     return ResolutionResult(
                         action=ResolutionAction.CREATE_NEW,
                         confidence=ResolutionConfidence.HIGH,
-                        note="Different role detected at same company; create new record.",
+                        note=f"Different role detected at same company; create new record ({reason})",
+                    )
+                elif decision == "AMBIGUOUS":
+                    return ResolutionResult(
+                        action=ResolutionAction.FLAG_FOR_MANUAL,
+                        confidence=ResolutionConfidence.AMBIGUOUS,
+                        note=f"Ambiguous role resolution: {reason}",
                     )
 
         return ResolutionResult(

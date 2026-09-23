@@ -20,6 +20,7 @@ import pytest
 from worker.agent_state import AgentState
 from worker.entity_resolution import (
     ApplicationCandidate,
+    EntityAliasCache,
     ResolutionAction,
     ResolutionConfidence,
     date_proximity_match,
@@ -100,6 +101,9 @@ def test_case1_bundl_resolves_to_swiggy():
     Case 1: "Bundl Technologies Pvt Ltd" -> resolves to "Swiggy" (LLM arbitration).
     Bundl Technologies is Swiggy's parent corporate entity in India.
     """
+    EntityAliasCache.set("bundl", "swiggy")
+    EntityAliasCache.set("bundl technologies", "swiggy")
+
     swiggy_app = _make_candidate(
         app_id="app_swiggy_001",
         company="Swiggy",

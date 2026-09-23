@@ -183,6 +183,15 @@ class CreateFromTriageRequest(BaseModel):
     note: Optional[str] = ""
 
 
+class UpdateApplicationRequest(BaseModel):
+    company_name: Optional[str] = None
+    role_title: Optional[str] = None
+    location: Optional[str] = None
+    primary_tech_stack: Optional[List[str]] = None
+    source_platform: Optional[str] = None
+    job_description_raw: Optional[str] = None
+
+
 
 # ==============================================================================
 # Serializers — map backend models → frontend TypeScript shapes
@@ -447,6 +456,61 @@ def parse_and_tailor(payload: ParseJDRequest, db: Session = Depends(get_db)):
         "guard_passed":       result.guard_passed,
         "extraction_retries": result.extraction_retries,
     }
+
+
+@app.patch("/api/applications/{app_id}")
+def update_application(app_id: str, payload: UpdateApplicationRequest, db: Session = Depends(get_db)):
+    """
+    Update application fields (company, role, location, tech stack, source, JD).
+    When company_name is modified:
+    - Automatically updates canonical_company_name
+    - Persists mapping into dynamic EntityAliasCache so subsequent inbound emails match seamlessly
+    """
+    try:
+        uid = uuid.UUID(app_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid application ID format")
+
+    app_row = db.query(Application).filter(Application.id == uid).first()
+    if not app_row:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    if payload.company_name is not None and payload.company_name.strip():
+        old_company = app_row.company_name
+        new_company = payload.company_name.strip()
+        app_row.company_name = new_company
+        from web.services.schemas import normalize_company_name
+        app_row.canonical_company_name = normalize_company_name(new_company)
+
+        # Register user confirmation into dynamic alias cache
+        try:
+            from worker.entity_resolution import EntityAliasCache
+            EntityAliasCache.set(new_company, new_company, db_session=db)
+            if old_company and old_company.lower().strip() != new_company.lower().strip():
+                EntityAliasCache.set(old_company, new_company, db_session=db)
+        except Exception as e:
+            logger.warning("Could not register updated company into EntityAliasCache: %s", e)
+
+    if payload.role_title is not None and payload.role_title.strip():
+        app_row.role_title = payload.role_title.strip()
+
+    if payload.location is not None:
+        app_row.location = payload.location.strip() or None
+
+    if payload.primary_tech_stack is not None:
+        app_row.primary_tech_stack = payload.primary_tech_stack
+
+    if payload.source_platform is not None and payload.source_platform.strip():
+        app_row.source_platform = payload.source_platform.strip()
+
+    if payload.job_description_raw is not None:
+        app_row.job_description_raw = payload.job_description_raw
+
+    app_row.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(app_row)
+
+    return _serialize_application(app_row)
 
 
 @app.patch("/api/applications/{app_id}/resume")
@@ -1048,55 +1112,11 @@ def seed_demo_attention_items(
     db: Session = Depends(get_db),
 ):
     """
-    Seeds initial realistic ambiguous triage items (Bundl/Swiggy, Stripe, Datadog)
-    if no pending items exist, marked with source="DEMO".
+    Seeds initial realistic ambiguous triage items (Bundl/Swiggy, Stripe)
+    via web.services.demo_seeder.
     """
-    existing = db.query(InboundTriageItem).filter(
-        (InboundTriageItem.source == "DEMO")
-        | (InboundTriageItem.sender.in_(["recruiting@bundltechnologies.com", "talent-team@stripe.com"]))
-    ).count()
-    if existing > 0:
-        return {"success": True, "message": f"{existing} demo triage items already exist."}
-
-    swiggy_apps = db.query(Application).filter(func.lower(Application.company_name).like("%swiggy%")).all()
-    swiggy_ids = [str(a.id) for a in swiggy_apps]
-
-    item1 = InboundTriageItem(
-        id=uuid.uuid4(),
-        source="DEMO",
-        sender="recruiting@bundltechnologies.com",
-        subject="Next steps regarding your application at Bundl Technologies (Swiggy)",
-        raw_body="Hi candidate, thank you for your application to Bundl Technologies (Swiggy). We were impressed with your engineering background and would like to schedule a technical discussion regarding your candidacy. Please confirm which application and stage to update.",
-        detected_company="Bundl Technologies",
-        detected_role="Full Stack Engineer",
-        suggested_stage="INTERVIEW_ROUND",
-        resolution_confidence="AMBIGUOUS",
-        resolution_note="Multiple active applications found under alias 'Bundl Technologies / Swiggy'. Needs user disambiguation.",
-        candidate_application_ids=swiggy_ids,
-        status="PENDING",
-        created_at=datetime.now(timezone.utc),
-    )
-    db.add(item1)
-
-    item2 = InboundTriageItem(
-        id=uuid.uuid4(),
-        source="DEMO",
-        sender="talent-team@stripe.com",
-        subject="Update on your interview loop at Stripe",
-        raw_body="Hello, our hiring committee has reviewed your profile and wanted to coordinate the upcoming technical interview rounds with our payments infrastructure engineering group.",
-        detected_company="Stripe",
-        detected_role="Software Engineer - Infrastructure",
-        suggested_stage="INTERVIEW_ROUND",
-        resolution_confidence="AMBIGUOUS",
-        resolution_note="Sender domain matches Stripe, but application role title differs between Backend Engineer and Infrastructure Engineer.",
-        candidate_application_ids=[],
-        status="PENDING",
-        created_at=datetime.now(timezone.utc),
-    )
-    db.add(item2)
-
-    db.commit()
-    return {"success": True, "seeded": 2}
+    from web.services.demo_seeder import seed_demo_attention_data
+    return seed_demo_attention_data(db)
 
 
 @app.post("/api/attention/clear-demo")
@@ -1104,21 +1124,10 @@ def clear_demo_attention_items(
     db: Session = Depends(get_db),
 ):
     """
-    Purges all demo/sample triage items from the database.
+    Purges all demo/sample triage items from the database via web.services.demo_seeder.
     """
-    items = (
-        db.query(InboundTriageItem)
-        .filter(
-            (InboundTriageItem.source == "DEMO")
-            | (InboundTriageItem.sender.in_(["recruiting@bundltechnologies.com", "talent-team@stripe.com"]))
-        )
-        .all()
-    )
-    count = len(items)
-    for it in items:
-        db.delete(it)
-    db.commit()
-    return {"success": True, "deleted": count}
+    from web.services.demo_seeder import clear_demo_attention_data
+    return clear_demo_attention_data(db)
 
 
 

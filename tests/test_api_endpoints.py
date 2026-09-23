@@ -393,4 +393,25 @@ def test_deadline_cleared_on_status_override_to_new_stage(client, mock_db, sampl
     assert data["deadline"] is None
 
 
+def test_update_application_endpoint(client, mock_db, sample_application):
+    """Verify PATCH /api/applications/{app_id} updates fields and recalculates canonical name."""
+    mock_db.query.return_value.filter.return_value.first.return_value = sample_application
+
+    update_payload = {
+        "company_name": "Maersk Technologies Pvt Ltd",
+        "role_title": "Staff AI Engineer",
+        "location": "Copenhagen, Denmark",
+        "primary_tech_stack": ["Python", "PyTorch", "Kubernetes"],
+    }
+    response = client.patch(f"/api/applications/{sample_application.id}", json=update_payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["company"] == "Maersk Technologies Pvt Ltd"
+    assert data["role"] == "Staff AI Engineer"
+    assert data["location"] == "Copenhagen, Denmark"
+    assert "PyTorch" in data["stack"]
+    assert sample_application.canonical_company_name == "maersk"
+    assert mock_db.commit.called
+
+
 

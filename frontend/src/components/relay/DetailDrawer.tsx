@@ -46,6 +46,7 @@ import {
   overrideStatus,
   updatePortalText,
   updateResume,
+  updateApplication,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { formatApplied, formatTimelineDate } from "@/lib/date-format";
@@ -136,12 +137,62 @@ export function DetailDrawer({
   const [resumeDraft, setResumeDraft] = useState("");
   const [isSavingResume, setIsSavingResume] = useState(false);
 
+  // Application details edit state
+  const [isEditingDetails, setIsEditingDetails] = useState(false);
+  const [editCompany, setEditCompany] = useState("");
+  const [editRole, setEditRole] = useState("");
+  const [editLocation, setEditLocation] = useState("");
+  const [editStack, setEditStack] = useState("");
+  const [editSource, setEditSource] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [isSavingDetails, setIsSavingDetails] = useState(false);
+
   useEffect(() => {
     if (app) {
       setResumeDraft(app.resume || "");
       setIsEditingResume(false);
+      setEditCompany(app.company || "");
+      setEditRole(app.role || "");
+      setEditLocation(app.location || "");
+      setEditStack(Array.isArray(app.stack) ? app.stack.join(", ") : "");
+      setEditSource(app.source || "Direct");
+      setEditDescription((app as any).job_description_raw || "");
+      setIsEditingDetails(false);
     }
-  }, [app?.id, app?.resume]);
+  }, [app?.id, app?.resume, app?.company, app?.role, app?.location]);
+
+  async function handleSaveDetails() {
+    if (!app) return;
+    if (!editCompany.trim() || !editRole.trim()) {
+      toast.error("Company name and Role title cannot be empty.");
+      return;
+    }
+    setIsSavingDetails(true);
+    try {
+      const stackList = editStack
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      await updateApplication(app.id, {
+        company_name: editCompany.trim(),
+        role_title: editRole.trim(),
+        location: editLocation.trim() || undefined,
+        primary_tech_stack: stackList,
+        source_platform: editSource.trim() || undefined,
+        job_description_raw: editDescription.trim() || undefined,
+      });
+
+      toast.success("Application details updated successfully!");
+      setIsEditingDetails(false);
+      onUpdated?.();
+    } catch (err: any) {
+      console.error("Failed to update application:", err);
+      toast.error(err.message || "Failed to update application.");
+    } finally {
+      setIsSavingDetails(false);
+    }
+  }
 
   if (!app) return null;
   const stage = STAGES.find((s) => s.id === app.stage);
@@ -232,8 +283,19 @@ export function DetailDrawer({
               <span className="grid size-9 place-items-center rounded-md border border-border bg-surface text-sm font-semibold uppercase">
                 {app.company.slice(0, 1)}
               </span>
-              <div className="min-w-0">
-                <SheetTitle className="truncate text-base">{app.company}</SheetTitle>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <SheetTitle className="truncate text-base">{app.company}</SheetTitle>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 gap-1 px-1.5 text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => setIsEditingDetails(!isEditingDetails)}
+                  >
+                    <Edit3 className="size-3" />
+                    <span className="text-[11px]">{isEditingDetails ? "Cancel" : "Edit"}</span>
+                  </Button>
+                </div>
                 <p className="truncate text-xs text-muted-foreground">
                   {app.role} · {app.location || "Remote"}
                 </p>
@@ -243,6 +305,90 @@ export function DetailDrawer({
                 </p>
               </div>
             </div>
+
+            {isEditingDetails && (
+              <div className="mt-3 space-y-2 rounded-md border border-border bg-surface/50 p-3 text-xs">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] font-semibold uppercase text-muted-foreground">Company</label>
+                    <Input
+                      value={editCompany}
+                      onChange={(e) => setEditCompany(e.target.value)}
+                      placeholder="Company name"
+                      className="h-7 text-xs bg-background"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold uppercase text-muted-foreground">Role Title</label>
+                    <Input
+                      value={editRole}
+                      onChange={(e) => setEditRole(e.target.value)}
+                      placeholder="Role title"
+                      className="h-7 text-xs bg-background"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] font-semibold uppercase text-muted-foreground">Location</label>
+                    <Input
+                      value={editLocation}
+                      onChange={(e) => setEditLocation(e.target.value)}
+                      placeholder="Location (e.g. Remote)"
+                      className="h-7 text-xs bg-background"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold uppercase text-muted-foreground">Source</label>
+                    <Input
+                      value={editSource}
+                      onChange={(e) => setEditSource(e.target.value)}
+                      placeholder="e.g. LinkedIn, Direct"
+                      className="h-7 text-xs bg-background"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[10px] font-semibold uppercase text-muted-foreground">Tech Stack (comma-separated)</label>
+                  <Input
+                    value={editStack}
+                    onChange={(e) => setEditStack(e.target.value)}
+                    placeholder="e.g. Python, FastAPI, React"
+                    className="h-7 text-xs bg-background"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-semibold uppercase text-muted-foreground">Job Description / Notes</label>
+                  <Textarea
+                    rows={2}
+                    value={editDescription}
+                    onChange={(e) => setEditDescription(e.target.value)}
+                    placeholder="Role notes or job description..."
+                    className="resize-none text-xs bg-background"
+                  />
+                </div>
+                <div className="flex justify-end gap-2 pt-1">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-xs"
+                    onClick={() => setIsEditingDetails(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="h-7 gap-1 text-xs"
+                    disabled={isSavingDetails}
+                    onClick={handleSaveDetails}
+                  >
+                    {isSavingDetails ? <Loader2 className="size-3 animate-spin" /> : <Save className="size-3" />}
+                    Save Changes
+                  </Button>
+                </div>
+              </div>
+            )}
+
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <Badge
                 variant={

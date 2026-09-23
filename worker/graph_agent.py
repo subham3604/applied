@@ -19,6 +19,7 @@ Section 5 of SYSTEM_DESIGN.md:
 
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from email.utils import parseaddr
 import logging
 import re
 import uuid
@@ -26,7 +27,15 @@ from typing import Any, Dict, Optional
 
 from langgraph.graph import END, START, StateGraph
 
+from pydantic import BaseModel, Field
 from worker.agent_state import AgentState, ApplicationEventType, ParsedEmailEvent
+from worker.entity_resolution import (
+    EntityAliasCache,
+    ResolutionAction,
+    ResolutionConfidence,
+    _get_instructor_client,
+    lookup_company_web,
+)
 from worker.gmail_filter import check_email_relevance
 from worker.state_machine import (
     evaluate_transition,
@@ -140,6 +149,69 @@ def node_relevance_gate(state: AgentState) -> Dict[str, Any]:
     return updates
 
 
+class ExtractedEmailEvent(BaseModel):
+    company_name: str = Field(description="The actual hiring company name (NOT an ATS or portal vendor like Workday, Lever, Greenhouse, Ashby, SmartRecruiters).")
+    role_title: Optional[str] = Field(default=None, description="The job role / title mentioned in the email, or None if unspecified.")
+    event_type: str = Field(description="The event stage: APPLICATION_RECEIVED, OA_RECEIVED, INTERVIEW_INVITE, OFFER, REJECTED, or STATUS_UPDATE.")
+    deadline: Optional[str] = Field(default=None, description="Assessment or interview deadline string / ISO timestamp if specified.")
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="Extraction confidence score.")
+
+
+def _extract_with_llm(state: AgentState) -> Optional[Dict[str, Any]]:
+    client = _get_instructor_client()
+    if not client:
+        return None
+
+    raw_text = (state.get("raw_email_text") or "")[:1500]
+    subject = state.get("subject", "")
+    sender = state.get("sender", "")
+
+    prompt = (
+        f"Analyze the following job application email and extract the key details.\n"
+        f"Sender: {sender}\n"
+        f"Subject: {subject}\n\n"
+        f"Email Content Snippet:\n{raw_text}\n\n"
+        f"Instructions:\n"
+        f"1. Company Name: Identify the actual hiring organization. Do NOT return the ATS or applicant tracking software provider (e.g. do not return 'Workday', 'Myworkday', 'Lever', 'Greenhouse', 'Hire', 'SmartRecruiters', 'Ashby').\n"
+        f"2. If the email is from Workday (e.g. tenant@myworkday.com), the tenant prefix or display name is the company hiring (e.g. Maersk, Modernizing Medicine, etc.).\n"
+        f"3. Role Title: Extract the specific role title if present (e.g. 'AI/ML Engineer (Data Engineering + AI Focus)').\n"
+        f"4. Event Type: Classify into one of: APPLICATION_RECEIVED, OA_RECEIVED, INTERVIEW_INVITE, OFFER, REJECTED, STATUS_UPDATE."
+    )
+
+    try:
+        res = client.chat.completions.create(
+            model="gpt-4o-mini",
+            response_model=ExtractedEmailEvent,
+            messages=[
+                {"role": "system", "content": "You are an expert ATS email parsing engine. Extract precise structured data."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.0,
+        )
+        if res and res.company_name and res.company_name.lower().strip() not in ("unknown", "unknown company", "workday", "myworkday", "hire"):
+            event_type_val = res.event_type.upper()
+            valid_types = {e.value for e in ApplicationEventType}
+            if event_type_val not in valid_types:
+                event_type_val = ApplicationEventType.APPLICATION_RECEIVED.value
+
+            # Cache resolved sender domain -> company
+            disp_name, addr = parseaddr(sender)
+            if addr:
+                EntityAliasCache.set(addr, res.company_name)
+                if "@" in addr:
+                    EntityAliasCache.set(addr.split("@")[-1], res.company_name)
+
+            return {
+                "company_raw": res.company_name.strip(),
+                "role_title": res.role_title.strip() if res.role_title else None,
+                "event_type": event_type_val,
+                "deadline": res.deadline,
+            }
+    except Exception as e:
+        logger.debug("LLM extraction attempt failed (%s); using deterministic fallback.", e)
+        return None
+
+
 def node_extract_event(state: AgentState) -> Dict[str, Any]:
     """
     Node 1: Extract Event.
@@ -182,74 +254,87 @@ def node_extract_event(state: AgentState) -> Dict[str, Any]:
         if event_type == ApplicationEventType.OA_RECEIVED:
             event_type = ApplicationEventType.APPLICATION_RECEIVED
 
-    # 1. First priority: Extract company from Sender Display Name or Domain
+    # 1. Extract Company Name (Generalized across ATS providers, headers, and prepositions)
     sender = state.get("sender", "")
-    KNOWN_COMPANIES = [
-        "Hewlett Packard Enterprise", "Modernizing Medicine", "JPMorgan Chase", "Goldman Sachs",
-        "GE Vernova", "Bloomberg", "QuickReply", "Databricks", "Microsoft", "Atlassian",
-        "Razorpay", "Infosys", "Walmart", "LeetCode", "Scaler", "Netomi", "Zomato",
-        "Retool", "Swiggy", "Google", "Amazon", "Canva", "Adobe", "Notion", "Meesho",
-        "Stripe", "Uber", "Cisco", "CRED", "NICE", "VMware", "WEX", "IQVIA", "Iskima",
-        "NxtWave", "Visa", "Momentum", "Zyntrix", "Quon Labs", "PhonePe", "TCS", "Bundl Technologies", "Datadog"
-    ]
-    
-    company = "Unknown Company"
-    # Check Workday ATS prefixes first (e.g. modmed@myworkday.com, wexinc@myworkday.com)
-    if "@myworkday.com" in sender.lower():
-        prefix = sender.lower().split("@")[0].split("<")[-1].strip()
-        if "modmed" in prefix:
-            company = "Modernizing Medicine"
-        elif "wex" in prefix:
-            company = "WEX"
-        elif "hpe" in prefix:
-            company = "Hewlett Packard Enterprise"
-        elif "gevernova" in prefix:
-            company = "GE Vernova"
-        elif "adobe" in prefix:
-            company = "Adobe"
+    disp_name, addr = parseaddr(sender)
+    disp_name = disp_name.strip('"\' ')
+    addr_lower = addr.lower()
 
-    # Check sender display name (e.g. "Cisco Recruiting", "LeetCode Talent Acquisition")
-    if company == "Unknown Company":
-        for comp in KNOWN_COMPANIES:
-            if re.search(rf'\b{re.escape(comp)}\b', sender, re.IGNORECASE):
-                company = comp
-                break
+    # 1. Extract Company Name & Event details via Structured LLM if available
+    llm_extracted = _extract_with_llm(state)
+    if llm_extracted:
+        return {
+            "parsed_event": llm_extracted,
+            "execution_path": path,
+        }
 
-    # 2. Second priority: Subject line patterns
-    if company == "Unknown Company":
-        for comp in KNOWN_COMPANIES:
-            if re.search(rf'\b{re.escape(comp)}\b', subject, re.IGNORECASE):
-                company = comp
-                break
+    # Fallback to Generalized Deterministic Parsing (when LLM is offline or unconfigured)
+    sender = state.get("sender", "")
+    disp_name, addr = parseaddr(sender)
+    disp_name = disp_name.strip('"\' ')
+    addr_lower = addr.lower()
 
-    # 3. Third priority: Preposition match in subject
-    if company == "Unknown Company":
-        match = re.search(
-            r'(?:applying to|applied to|welcome to|offer from|interview with|invite from|at|by|from|with)\s+'
-            r'([A-Za-z0-9\s&]+?)(?:\s*(?:Pvt|Private|Ltd|Limited|for|on|\.|\-|$))',
-            subject,
-            re.IGNORECASE,
-        )
-        if match and len(match.group(1).strip()) > 1:
-            cand_name = match.group(1).strip()
-            if not any(bad in cand_name.lower() for bad in ("interview", "assessment", "application", "invitation", "opportunity", "update", "next steps")):
-                company = cand_name
+    company = EntityAliasCache.get(addr) or EntityAliasCache.get(disp_name)
 
-    # 4. Fourth priority: Check sender domain
-    if company == "Unknown Company" and "@" in sender:
-        domain_match = re.search(r'@(?:careers\.|jobs\.|talent\.|recruiting\.|hr\.)?([A-Za-z0-9\-]+)\.', sender)
+    # A. ATS Display Name (e.g. "Gushwork <no-reply@hire.lever.co>")
+    ats_domains = ("lever.co", "greenhouse.io", "ashbyhq.com", "smartrecruiters.com", "breezy.hr", "jobvite.com", "workable.com")
+    is_ats = any(dom in addr_lower for dom in ats_domains)
+    if not company and is_ats and disp_name:
+        clean_disp = re.sub(r'\s*(?:Recruiting|Talent Acquisition|Talent Team|Careers|Team|HR|Jobs|Hiring Team|No-Reply)\b.*', '', disp_name, flags=re.IGNORECASE).strip()
+        if clean_disp and clean_disp.lower() not in ("no-reply", "notifications", "recruiting", "support"):
+            company = clean_disp
+
+    # B. Workday Email Structure: <tenant>@myworkday.com -> extract tenant dynamically
+    if not company and "@myworkday.com" in addr_lower:
+        prefix = addr_lower.split("@")[0].split("<")[-1].strip()
+        cached = EntityAliasCache.get(prefix)
+        if cached:
+            company = cached
+        elif disp_name and not any(bad in disp_name.lower() for bad in ("workday", "recruiting", "talent", "do-not-reply", "support")):
+            company = disp_name
+        else:
+            clean_p = re.sub(r'(?:inc|corp|careers|jobs)$', '', prefix).strip()
+            company = clean_p.title() if clean_p else None
+
+    # C. Display Name Fallback: If sender display name is not generic
+    if not company and disp_name:
+        clean_disp = re.sub(r'\s*(?:Recruiting|Talent Acquisition|Talent Team|Careers|Team|HR|Jobs|Hiring Team|No-Reply)\b.*', '', disp_name, flags=re.IGNORECASE).strip()
+        if clean_disp and clean_disp.lower() not in ("no-reply", "notifications", "recruiting", "support", "careers", "talent acquisition"):
+            company = clean_disp
+
+    # D. Subject Line Preposition Patterns
+    if not company:
+        subj_clean = re.sub(r'^(?:Fwd?:|Re:)\s*', '', subject, flags=re.IGNORECASE).strip()
+        patterns = [
+            r'(?:applying to|applied to|application to|welcome to|offer from|interview with|invite from|interest in|career opportunity at|opportunity at|position at|role at|\bat)\s+([A-Za-z0-9\s&]+?)(?:\s*(?:Pvt|Private|Ltd|Limited|for|on|\.|\-|$))',
+            r'(?:Thank You for Applying to|Thanks for applying to|Thank you for your interest in)\s+([A-Za-z0-9\s&]+?)(?:\s*(?:Pvt|Private|Ltd|Limited|for|on|\.|\-|$))',
+            r'([A-Za-z0-9\s&]+?)\s+(?:Application Received|Job Application|Interview|Careers)',
+        ]
+        for pat in patterns:
+            m = re.search(pat, subj_clean, re.IGNORECASE)
+            if m and len(m.group(1).strip()) > 1:
+                cand = m.group(1).strip()
+                if not any(bad in cand.lower() for bad in ("interview", "assessment", "application", "invitation", "opportunity", "update", "next steps", "submission", "candidate")):
+                    company = cand
+                    break
+
+    # E. Sender Domain (Excluding public webmail, ATS platforms, testing platforms)
+    if not company and "@" in addr:
+        domain_match = re.search(r'@(?:careers\.|jobs\.|talent\.|recruiting\.|hr\.)?([A-Za-z0-9\-]+)\.', addr)
         if domain_match:
             dom = domain_match.group(1).lower()
-            if dom not in ("gmail", "yahoo", "outlook", "hotmail", "greenhouse", "lever", "workday", "smartrecruiters", "ashbyhq", "hackerrankforwork", "hackerrank", "codility", "mettl", "hackerearth", "codesignal"):
-                company = dom.capitalize()
+            ats_and_webmail = {
+                "gmail", "yahoo", "outlook", "hotmail", "icloud", "mail",
+                "greenhouse", "lever", "workday", "myworkday", "smartrecruiters",
+                "ashbyhq", "breezy", "jobvite", "workable", "hire",
+                "hackerrank", "hackerrankforwork", "hackerearth", "codility", "mettl", "codesignal",
+            }
+            if dom not in ats_and_webmail:
+                clean_dom = re.sub(r'(?:software|solutions|services|technologies|tech|group|global|holdings)$', '', dom).strip()
+                company = (clean_dom or dom).capitalize()
 
-    # 5. Fifth priority: Known companies in body text (ignoring meeting tool mentions like "Google Meet")
-    if company == "Unknown Company":
-        body_cleaned = re.sub(r'\bGoogle\s+Meet\b|\bGoogle\s+Docs?\b|\bZoom\s+Meeting\b|\bZoom\s+Call\b', '', raw_text, flags=re.IGNORECASE)
-        for comp in KNOWN_COMPANIES:
-            if re.search(rf'\b{re.escape(comp)}\b', body_cleaned, re.IGNORECASE):
-                company = comp
-                break
+    if not company:
+        company = "Unknown Company"
 
     # Extract due date and time for OA and Interviews
     deadline = None
@@ -275,17 +360,45 @@ def node_extract_event(state: AgentState) -> Dict[str, Any]:
                     date_str = date_pattern.group(1).strip()
                     parsed_dt = _parse_deadline_datetime(date_str)
                     deadline = parsed_dt.isoformat() if parsed_dt else date_str
-    # Extract role title if explicitly stated in email text or subject
+
+    # 2. Extract Role Title (Generalized)
     role_title = None
-    role_pattern = re.search(
-        r'(?:for the|for a|as a|as an|position of|role of)\s+([A-Za-z0-9\s\-\/\(\)]+?)(?:\s+(?:position|role|opportunity)|\.|\n|,|$)',
-        combined,
-        re.IGNORECASE,
-    )
-    if role_pattern and len(role_pattern.group(1).strip()) > 2:
-        cand_role = role_pattern.group(1).strip()
-        if not any(bad in cand_role.lower() for bad in ("interview", "assessment", "application", "submission", "next steps", "referral from", "dear candidate")):
-            role_title = cand_role
+
+    # Priority A: High-signal Subject Line patterns
+    subj_patterns = [
+        r'Application received for\s+([A-Za-z0-9\s\-\/\(\)\+\.]+?)(?:\s+position|\.|\-|$)',
+        r'Application Received:?\s+([A-Za-z0-9\s\-\/\(\)\+\.]+?)(?:\s+position|\.|\-|$)',
+        r'Received Your Application for the\s+([A-Za-z0-9\s\-\/\(\)\+\.]+?)(?:\s+Position|\s+Role|\s+Opening|\.|\-|$)',
+        r'Update on [^’\']+[’\']s\s+([A-Za-z0-9\s\-\/\(\)\+\.]+?)\s+Role',
+        r'Follow up on your interest in\s+([A-Za-z0-9\s\-\/\(\)\+\.]+?)\s+at\s+',
+        r'position closed\s+[A-Za-z0-9\-]+\s+([A-Za-z0-9\s\-\/\(\)\+\.]+)',
+        r'role of\s+([A-Za-z0-9\s\-\/\(\)\+\.]+?)(?:\s+at|\.|\-|$)',
+    ]
+    for pat in subj_patterns:
+        m = re.search(pat, subject, re.IGNORECASE)
+        if m and len(m.group(1).strip()) > 2:
+            cand_role = m.group(1).strip()
+            if not any(b in cand_role.lower() for b in ("application", "review", "status", "thank you", "submission")):
+                role_title = cand_role
+                break
+
+    # Priority B: Body patterns on clean text
+    if not role_title and raw_text:
+        body_patterns = [
+            r'received your application for (?:the\s+)?([A-Za-z0-9\s\-\/\(\)\+\.]+?)(?:,|\.|\n|at\s+|with\s+|position|role|opportunity|and we are)',
+            r'application for (?:the\s+)?([A-Za-z0-9\s\-\/\(\)\+\.]+?)\s+position',
+            r'role of\s+(?:[A-Za-z0-9\-]+\s*-\s*)?([A-Za-z0-9\s\-\/\(\)\+\.]+?)(?:\s*\.|\s*,|\s*\n)',
+            r'position of\s+(?:[A-Za-z0-9\-]+\s*-\s*)?([A-Za-z0-9\s\-\/\(\)\+\.]+?)(?:\s*\.|\s*,|\s*\n)',
+            r'applied for the\s+([A-Za-z0-9\s\-\/\(\)\+\.]+?)(?:\s+position|\s+role|\.|\,)',
+        ]
+        for pat in body_patterns:
+            m = re.search(pat, raw_text, re.IGNORECASE)
+            if m and len(m.group(1).strip()) > 2:
+                cand_role = m.group(1).strip()
+                cand_role = re.split(r'\s+(?:Our|We|Thank|Please|A member|You|If)\b', cand_role)[0].strip()
+                if not any(b in cand_role.lower() for b in ("dear", "candidate", "subham", "application", "hiring")):
+                    role_title = cand_role
+                    break
 
     extracted = {
         "company_raw": company,
@@ -426,6 +539,7 @@ def node_entity_resolution(state: AgentState) -> Dict[str, Any]:
     return {
         "matched_application_id": resolution.matched_application_id,
         "resolution_confidence": resolution.confidence.value,
+        "resolution_action": resolution.action.value,
         "resolution_note": resolution.note,
         "is_new_application": is_new,
         "execution_path": path,
@@ -632,11 +746,10 @@ def node_commit_and_log(state: AgentState) -> Dict[str, Any]:
         try:
             from db.models import InboundTriageItem
             with _get_db_session(state) as session:
-                if session is not None:
                     parsed = state.get("parsed_event") or {}
-                    detected_company = parsed.get("company_name")
+                    detected_company = parsed.get("company_raw") or parsed.get("company_name") or "Unknown Company"
                     detected_role = parsed.get("role_title")
-                    suggested_stage = state.get("target_status") or parsed.get("stage")
+                    suggested_stage = state.get("target_status") or parsed.get("event_type") or "APPLIED"
                     confidence = state.get("resolution_confidence") or "AMBIGUOUS"
                     note = state.get("resolution_note") or "Flagged for manual disambiguation"
 
@@ -722,10 +835,20 @@ def route_after_repair(state: AgentState) -> str:
 
 def route_after_resolution(state: AgentState) -> str:
     """Branches to create_new_record, flag_for_manual, or state_transition."""
-    if state.get("is_new_application"):
-        return "create_new_record"
-    if state.get("resolution_confidence") == "AMBIGUOUS":
+    # 1. Flag for manual if resolution is ambiguous or action is explicitly FLAG_FOR_MANUAL
+    if state.get("resolution_confidence") == "AMBIGUOUS" or state.get("resolution_action") == "FLAG_FOR_MANUAL":
         return "flag_for_manual"
+
+    # 2. Check if this is a new application
+    if state.get("is_new_application"):
+        parsed = state.get("parsed_event")
+        if parsed and isinstance(parsed, dict):
+            comp = (parsed.get("company_raw") or "").lower().strip()
+            # Guard: never automatically create an application row if company is unknown or generic ATS
+            if comp in ("unknown company", "unknown", "workday", "myworkday", "hire", "recruiting"):
+                return "flag_for_manual"
+        return "create_new_record"
+
     return "state_transition"
 
 

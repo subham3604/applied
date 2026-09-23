@@ -70,3 +70,6 @@ dist-ssr/
 
 # Documentation & Internal Blueprints
 docs-local/
+
+#agent-skills
+.agents/

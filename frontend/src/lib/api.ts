@@ -136,6 +136,28 @@ export async function updatePortalText(
   return res.json();
 }
 
+export interface UpdateApplicationPayload {
+  company_name?: string;
+  role_title?: string;
+  location?: string;
+  primary_tech_stack?: string[];
+  source_platform?: string;
+  job_description_raw?: string;
+}
+
+export async function updateApplication(
+  appId: string,
+  updates: UpdateApplicationPayload
+): Promise<Application> {
+  const res = await fetch(`${API_BASE}/api/applications/${appId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) throw new Error(`Failed to update application: ${res.statusText}`);
+  return res.json();
+}
+
 export type VaultCategory = "WORK_EXPERIENCE" | "PROJECT" | "SKILL" | "EDUCATION";
 
 export interface VaultBullet {
