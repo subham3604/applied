@@ -593,6 +593,22 @@ def node_create_new_record(state: AgentState) -> Dict[str, Any]:
                     )
                     session.add(new_app)
                     session.flush()
+
+                    # Auto-generate grounded tailored resume snapshot from vault
+                    try:
+                        from web.services.resume_generator import generate_tailored_resume, save_resume_snapshot
+                        jd_context = f"Role: {role_title} at {company_raw}.\n{raw_text or ''}".strip()
+                        resume_res = generate_tailored_resume(jd_text=jd_context, db=session)
+                        save_resume_snapshot(
+                            application_id=new_app.id,
+                            markdown_content=resume_res.markdown_content,
+                            vault_ids=resume_res.retrieved_vault_ids,
+                            is_user_edited=False,
+                            db=session,
+                        )
+                        logger.info("Auto-generated tailored resume snapshot for new application: %s (%s)", company_raw, role_title)
+                    except Exception as resume_err:
+                        logger.warning("Could not auto-generate resume snapshot for %s: %s", app_uuid, resume_err)
             except Exception as exc:
                 logger.warning("Could not persist new Application in node_create_new_record: %s", exc)
 

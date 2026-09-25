@@ -415,7 +415,62 @@ def get_application(app_id: str, db: Session = Depends(get_db)):
     )
     if not app_row:
         raise HTTPException(status_code=404, detail="Application not found")
+
+    # If application has no active resume snapshot, auto-generate on the fly
+    active_snaps = [s for s in (app_row.resume_snapshots or []) if s.is_active]
+    if not active_snaps:
+        try:
+            from web.services.resume_generator import generate_tailored_resume, save_resume_snapshot
+            jd_context = f"Role: {app_row.role_title} at {app_row.company_name}.\n{app_row.job_description_raw or ''}".strip()
+            resume_res = generate_tailored_resume(jd_text=jd_context, db=db)
+            snapshot = save_resume_snapshot(
+                application_id=app_row.id,
+                markdown_content=resume_res.markdown_content,
+                vault_ids=resume_res.retrieved_vault_ids,
+                is_user_edited=False,
+                db=db,
+            )
+            app_row.resume_snapshots = [snapshot]
+        except Exception as resume_err:
+            logger.warning("Could not on-demand generate resume snapshot for %s: %s", app_row.id, resume_err)
+
     return _serialize_application(app_row)
+
+
+@app.post("/api/applications/{app_id}/generate-resume")
+def generate_application_resume(app_id: str, db: Session = Depends(get_db)):
+    """
+    Synthesize or regenerate a grounded tailored resume snapshot from the Master Experience Vault.
+    """
+    try:
+        uid = uuid.UUID(app_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid application ID format")
+
+    app_row = db.query(Application).filter(Application.id == uid).first()
+    if not app_row:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    try:
+        from web.services.resume_generator import generate_tailored_resume, save_resume_snapshot
+        jd_context = f"Role: {app_row.role_title} at {app_row.company_name}.\n{app_row.job_description_raw or ''}".strip()
+        resume_res = generate_tailored_resume(jd_text=jd_context, db=db)
+        snapshot = save_resume_snapshot(
+            application_id=app_row.id,
+            markdown_content=resume_res.markdown_content,
+            vault_ids=resume_res.retrieved_vault_ids,
+            is_user_edited=False,
+            db=db,
+        )
+        return {
+            "success": True,
+            "resume_snapshot_id": str(snapshot.id),
+            "markdown_content": snapshot.markdown_content,
+            "projects_used": resume_res.projects_used,
+        }
+    except Exception as exc:
+        logger.error("Failed to generate resume snapshot for %s: %s", app_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to generate resume snapshot: {exc}")
 
 
 @app.post("/api/applications/parse")
@@ -1071,6 +1126,21 @@ def create_application_from_attention(
     )
     db.add(new_app)
     db.flush()
+
+    # Auto-generate grounded tailored resume snapshot from vault
+    try:
+        from web.services.resume_generator import generate_tailored_resume, save_resume_snapshot
+        jd_context = f"Role: {new_app.role_title} at {new_app.company_name}.\n{item.raw_body or ''}".strip()
+        resume_res = generate_tailored_resume(jd_text=jd_context, db=db)
+        save_resume_snapshot(
+            application_id=new_app.id,
+            markdown_content=resume_res.markdown_content,
+            vault_ids=resume_res.retrieved_vault_ids,
+            is_user_edited=False,
+            db=db,
+        )
+    except Exception as resume_err:
+        logger.warning("Could not auto-generate resume snapshot from attention item: %s", resume_err)
 
     event = PipelineEvent(
         id=uuid.uuid4(),

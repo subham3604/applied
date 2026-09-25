@@ -414,4 +414,27 @@ def test_update_application_endpoint(client, mock_db, sample_application):
     assert mock_db.commit.called
 
 
+def test_generate_application_resume_endpoint(client, mock_db, sample_application):
+    """Verify POST /api/applications/{app_id}/generate-resume synthesizes and saves snapshot."""
+    mock_db.query.return_value.filter.return_value.first.return_value = sample_application
+
+    mock_resume_res = MagicMock()
+    mock_resume_res.markdown_content = "# Tailored Resume Content"
+    mock_resume_res.retrieved_vault_ids = ["v1", "v2"]
+    mock_resume_res.projects_used = ["Project Alpha"]
+
+    mock_snapshot = MagicMock()
+    mock_snapshot.id = uuid.uuid4()
+    mock_snapshot.markdown_content = mock_resume_res.markdown_content
+
+    with patch("web.services.resume_generator.generate_tailored_resume", return_value=mock_resume_res), \
+         patch("web.services.resume_generator.save_resume_snapshot", return_value=mock_snapshot):
+        response = client.post(f"/api/applications/{sample_application.id}/generate-resume")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["markdown_content"] == "# Tailored Resume Content"
+        assert "Project Alpha" in data["projects_used"]
+
+
 

@@ -10,8 +10,9 @@ Layer 2: LLM Relevance Gate Intent Classification (Precision).
 import logging
 import os
 import re
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional, Tuple
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, model_validator
@@ -295,205 +296,302 @@ def _get_instructor_client(api_key: Optional[str] = None):
         return None
 
 
+# ==============================================================================
+# Declarative Heuristic Rule Specification Engine
+# ==============================================================================
+
+RE_OTP_CODE = re.compile(r"\b([a-zA-Z0-9]{6,8}|\d{4,8})\b")
+RE_NAUKRI_MULTI_APPLY = re.compile(r"you applied for (\d+) jobs?", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class HeuristicRule:
+    """
+    Declarative specification for an email intent classification rule.
+    Separates rule definitions from control flow for maintainability and auditability.
+    """
+    category: str
+    is_relevant: bool
+    confidence: float
+    reason: str
+    any_signals: Tuple[str, ...] = ()
+    context_signals: Tuple[str, ...] = ()
+    none_signals: Tuple[str, ...] = ()
+    sender_signals: Tuple[str, ...] = ()
+    body_regex: Optional[re.Pattern] = None
+    predicate: Optional[Callable[[str, str, str], bool]] = None
+    reason_fn: Optional[Callable[[str], str]] = None
+    is_commercial_course: bool = False
+    is_third_party_referral: bool = False
+    is_survey_or_feedback: bool = False
+
+    def matches(self, full_sample: str, body_snippet: str, sender_lower: str) -> bool:
+        """Evaluates whether this rule matches the email content."""
+        if self.predicate is not None:
+            return self.predicate(full_sample, body_snippet, sender_lower)
+
+        # Sender check (supports standalone or combined signals)
+        sender_matched = bool(self.sender_signals and any(s in sender_lower for s in self.sender_signals))
+        signal_matched = bool(self.any_signals and any(sig in full_sample for sig in self.any_signals))
+
+        if self.sender_signals and not self.any_signals:
+            if not sender_matched:
+                return False
+        elif self.any_signals and not self.sender_signals:
+            if not signal_matched:
+                return False
+        elif self.sender_signals and self.any_signals:
+            if not (sender_matched or signal_matched):
+                return False
+
+        # Context terms constraint: at least one must be present if configured
+        if self.context_signals and not any(kw in full_sample for kw in self.context_signals):
+            return False
+
+        # Exclusion constraint: none of these may be present
+        if self.none_signals and any(neg in full_sample for neg in self.none_signals):
+            return False
+
+        # Body regex pattern constraint
+        if self.body_regex and not self.body_regex.search(body_snippet):
+            return False
+
+        return True
+
+    def to_decision(self, full_sample: str = "") -> RelevanceDecision:
+        """Constructs a RelevanceDecision instance from this rule."""
+        reason_text = self.reason_fn(full_sample) if self.reason_fn else self.reason
+        return RelevanceDecision(
+            is_relevant=self.is_relevant,
+            confidence=self.confidence,
+            category=self.category,
+            reason=reason_text,
+            is_commercial_course=self.is_commercial_course,
+            is_third_party_referral=self.is_third_party_referral,
+            is_survey_or_feedback=self.is_survey_or_feedback,
+        )
+
+
+def _is_naukri_multi_digest(full_sample: str, body_snippet: str, sender_lower: str) -> bool:
+    """Detects Naukri multi-job digest emails while preserving single application notices."""
+    if "you applied for" not in full_sample:
+        return False
+    match = RE_NAUKRI_MULTI_APPLY.search(full_sample)
+    if not match:
+        return False
+    count = int(match.group(1))
+    return count > 1 and ("company" not in body_snippet and "role" not in body_snippet)
+
+
+def _naukri_multi_reason(full_sample: str) -> str:
+    match = RE_NAUKRI_MULTI_APPLY.search(full_sample)
+    count = match.group(1) if match else ">1"
+    return f"Naukri multi-job summary ({count} jobs) without specific single role details."
+
+
+# ==============================================================================
+# Rule Registries: Veto / Exclusion Rules & Intent / Lifecycle Rules
+# ==============================================================================
+
+VETO_RULES: Tuple[HeuristicRule, ...] = (
+    # 1. Mid-submission OTP or verification codes
+    HeuristicRule(
+        category="OTP_SECURITY_CODE",
+        is_relevant=False,
+        confidence=0.95,
+        reason="Detected mid-submission OTP or security verification code.",
+        any_signals=(
+            "security code", "verification code", "one-time passcode", "verify your identity",
+            "confirm your identity", "passcode", "expires in 10 minutes", "expires in 15 minutes",
+            "enter this code", "your one-time code",
+        ),
+        body_regex=RE_OTP_CODE,
+    ),
+    # 2. Blocked senders or AmbitionBox review nudges
+    HeuristicRule(
+        category="PROMOTIONAL_INVITE",
+        is_relevant=False,
+        confidence=0.98,
+        reason="AmbitionBox review nudge detected.",
+        sender_signals=("ambitionbox",),
+        any_signals=("see what employees have to say",),
+    ),
+    # 3. Promotional job recommendations and alerts (unless confirming application receipt)
+    HeuristicRule(
+        category="JOB_ALERT",
+        is_relevant=False,
+        confidence=0.90,
+        reason="Email contains promotional job recommendation or invitation to apply.",
+        any_signals=(
+            "apply now", "invited to apply", "is a match", "job alert", "jobs for you",
+            "recommended for you", "perfect match", "saved job", "jobs you might like",
+            "explore similar jobs", "based on your profile",
+        ),
+        none_signals=(
+            "we have received your application", "application received", "thank you for applying",
+        ),
+    ),
+    # 4. Naukri multiple job summary count (>1 jobs applied)
+    HeuristicRule(
+        category="JOB_ALERT",
+        is_relevant=False,
+        confidence=0.90,
+        reason="Naukri multi-job digest without specific role details.",
+        predicate=_is_naukri_multi_digest,
+        reason_fn=_naukri_multi_reason,
+    ),
+    # 5. Commercial training course, bootcamp, or fee-paying fellowship sales
+    HeuristicRule(
+        category="PROMOTIONAL_INVITE",
+        is_relevant=False,
+        confidence=0.95,
+        reason="Commercial training course, bootcamp, or fee-paying fellowship detected.",
+        any_signals=(
+            "scholarship value", "program fee", "fellowship program", "tuition concession",
+        ),
+        is_commercial_course=True,
+    ),
+    # 6. Outbound referral tracking for third-party candidate
+    HeuristicRule(
+        category="OTHER",
+        is_relevant=False,
+        confidence=0.95,
+        reason="Outbound referral receipt or tracking update for a third party candidate.",
+        any_signals=("thank you for referring", "your referral,", "referral bonus"),
+        none_signals=("referred you",),
+        is_third_party_referral=True,
+    ),
+    # 7. Candidate experience / post-interview surveys
+    HeuristicRule(
+        category="OTHER",
+        is_relevant=False,
+        confidence=0.95,
+        reason="Candidate experience or post-interview feedback survey detected.",
+        any_signals=(
+            "take the survey", "feedback about our interview",
+            "tell us about your interview", "interview experience survey",
+        ),
+        is_survey_or_feedback=True,
+    ),
+    # 8. Unsubmitted application draft reminders
+    HeuristicRule(
+        category="PROMOTIONAL_INVITE",
+        is_relevant=False,
+        confidence=0.95,
+        reason="Unsubmitted application draft reminder detected.",
+        any_signals=("haven't finished submitting", "haven't submitted it yet"),
+    ),
+    # 9. Event or webinar rescheduling/postponement notices
+    HeuristicRule(
+        category="OTHER",
+        is_relevant=False,
+        confidence=0.90,
+        reason="Event or webinar rescheduling notice detected.",
+        any_signals=("postponed", "rescheduled"),
+        context_signals=("session", "webinar"),
+    ),
+)
+
+INTENT_RULES: Tuple[HeuristicRule, ...] = (
+    # 1. Assessment / technical coding test invitations
+    HeuristicRule(
+        category="ASSESSMENT_INVITATION",
+        is_relevant=True,
+        confidence=0.95,
+        reason="Online assessment or technical coding test invitation detected.",
+        any_signals=(
+            "assessment", "coding test", "hackerrank", "hackerearth",
+            "codility", "mettl", "online test", "technical assessment",
+        ),
+    ),
+    # 2. Interview invitations & scheduling communications
+    HeuristicRule(
+        category="INTERVIEW_INVITATION",
+        is_relevant=True,
+        confidence=0.95,
+        reason="Interview invitation or scheduling communication detected.",
+        any_signals=(
+            "interview", "discussion", "technical screen", "round 1", "round 2",
+            "schedule a call", "hiring manager discussion",
+        ),
+    ),
+    # 3. Formal job offer letters
+    HeuristicRule(
+        category="OFFER_LETTER",
+        is_relevant=True,
+        confidence=0.98,
+        reason="Job offer or compensation package communication detected.",
+        any_signals=("offer letter", "pleased to offer", "congratulations on your offer"),
+    ),
+    # 4. Application rejection notifications (must have role/application context)
+    HeuristicRule(
+        category="REJECTION",
+        is_relevant=True,
+        confidence=0.95,
+        reason="Application rejection notification detected.",
+        any_signals=(
+            "regret to inform", "move forward with other candidates",
+            "will keep your profile on file", "not moving forward",
+            "decided to pursue other applicants", "unfortunately",
+        ),
+        context_signals=("application", "candidacy", "role"),
+    ),
+    # 5. Application viewed / recruiter activity updates on submitted roles
+    HeuristicRule(
+        category="APPLICATION_CONFIRMATION",
+        is_relevant=True,
+        confidence=0.95,
+        reason="Application viewed or recruiter activity update on submitted application detected.",
+        any_signals=(
+            "application was viewed",
+            "application viewed",
+            "recruiter viewed your application",
+            "viewed your application",
+            "application was downloaded",
+            "recruiter downloaded your resume",
+            "application has been shortlisted",
+        ),
+    ),
+    # 6. Definitive application submission confirmations
+    HeuristicRule(
+        category="APPLICATION_CONFIRMATION",
+        is_relevant=True,
+        confidence=0.95,
+        reason="Definitive application submission confirmation detected.",
+        any_signals=(
+            "application received", "thank you for applying", "thank you for your application",
+            "we have received your application", "your application has been submitted",
+            "keep track of your application", "next steps regarding your application",
+        ),
+    ),
+)
+
+
 def _heuristic_relevance_check(
     subject: str,
     sender: str,
     body_text: str,
 ) -> RelevanceDecision:
     """
-    Deterministic rule-based intent classifier used for offline testing or
-    when the OpenAI API is unconfigured/unavailable.
+    Deterministic rule-based intent classifier using declarative VETO and INTENT rules.
+    Used for offline testing, sandboxed runs, or when the OpenAI API is unavailable.
     """
     subject_lower = subject.lower()
     sender_lower = sender.lower()
     body_snippet = body_text[:1000].lower()
     full_sample = f"{subject_lower}\n{sender_lower}\n{body_snippet}"
 
-    # 1. Check for OTP / security codes / verification mid-form
-    otp_signals = [
-        "security code", "verification code", "one-time passcode", "verify your identity",
-        "confirm your identity", "passcode", "expires in 10 minutes", "expires in 15 minutes",
-        "enter this code", "your one-time code"
-    ]
-    if any(sig in full_sample for sig in otp_signals):
-        # Double check if there is an alphanumeric/numeric code pattern
-        if re.search(r"\b([a-zA-Z0-9]{6,8}|\d{4,8})\b", body_snippet):
-            return RelevanceDecision(
-                is_relevant=False,
-                confidence=0.95,
-                category="OTP_SECURITY_CODE",
-                reason="Detected mid-submission OTP or security verification code."
-            )
+    # Phase 1: High-priority Veto Rules (OTP, Spam, Digests, Courses, Surveys)
+    for rule in VETO_RULES:
+        if rule.matches(full_sample, body_snippet, sender_lower):
+            return rule.to_decision(full_sample)
 
-    # 2. Blocked senders or AmbitionBox review nudges
-    if "ambitionbox" in sender_lower or "see what employees have to say" in full_sample:
-        return RelevanceDecision(
-            is_relevant=False,
-            confidence=0.98,
-            category="PROMOTIONAL_INVITE",
-            reason="AmbitionBox review nudge detected."
-        )
+    # Phase 2: Lifecycle Intent Rules (Assessments, Interviews, Offers, Rejections, Confirmations)
+    for rule in INTENT_RULES:
+        if rule.matches(full_sample, body_snippet, sender_lower):
+            return rule.to_decision(full_sample)
 
-    # 3. Promotional job digests / invitations to apply
-    promo_signals = [
-        "apply now", "invited to apply", "is a match", "job alert", "jobs for you",
-        "recommended for you", "perfect match", "saved job", "jobs you might like",
-        "explore similar jobs", "based on your profile"
-    ]
-    if any(sig in full_sample for sig in promo_signals):
-        # Unless it specifically confirms application receipt
-        if not any(c in full_sample for c in ["we have received your application", "application received", "thank you for applying"]):
-            return RelevanceDecision(
-                is_relevant=False,
-                confidence=0.90,
-                category="JOB_ALERT",
-                reason="Email contains promotional job recommendation or invitation to apply."
-            )
-
-    # 4. Naukri multiple job summary vs single job confirmation
-    if "you applied for" in full_sample:
-        multi_match = re.search(r"you applied for (\d+) jobs?", full_sample)
-        if multi_match:
-            count = int(multi_match.group(1))
-            if count > 1 and ("company" not in body_snippet and "role" not in body_snippet):
-                return RelevanceDecision(
-                    is_relevant=False,
-                    confidence=0.90,
-                    category="JOB_ALERT",
-                    reason=f"Naukri multi-job summary ({count} jobs) without specific single role details."
-                )
-
-    # 4b. Commercial course / fellowship sales
-    if any(sig in full_sample for sig in ["scholarship value", "program fee", "fellowship program", "tuition concession"]):
-        return RelevanceDecision(
-            is_commercial_course=True,
-            is_relevant=False,
-            confidence=0.95,
-            category="PROMOTIONAL_INVITE",
-            reason="Commercial training course, bootcamp, or fee-paying fellowship detected."
-        )
-
-    # 4c. Outbound referral tracking (user referred someone else)
-    if ("thank you for referring" in full_sample or "your referral," in full_sample or "referral bonus" in full_sample) and "referred you" not in full_sample:
-        return RelevanceDecision(
-            is_third_party_referral=True,
-            is_relevant=False,
-            confidence=0.95,
-            category="OTHER",
-            reason="Outbound referral receipt or tracking update for a third party candidate."
-        )
-
-    # 4d. Candidate experience / post-interview surveys
-    if any(sig in full_sample for sig in ["take the survey", "feedback about our interview", "tell us about your interview", "interview experience survey"]):
-        return RelevanceDecision(
-            is_survey_or_feedback=True,
-            is_relevant=False,
-            confidence=0.95,
-            category="OTHER",
-            reason="Candidate experience or post-interview feedback survey detected."
-        )
-
-    # 4e. Draft reminders (incomplete application)
-    if "haven't finished submitting" in full_sample or "haven't submitted it yet" in full_sample:
-        return RelevanceDecision(
-            is_relevant=False,
-            confidence=0.95,
-            category="PROMOTIONAL_INVITE",
-            reason="Unsubmitted application draft reminder detected."
-        )
-
-    # 4f. Event / webinar postponements
-    if ("postponed" in full_sample or "rescheduled" in full_sample) and ("session" in full_sample or "webinar" in full_sample):
-        return RelevanceDecision(
-            is_relevant=False,
-            confidence=0.90,
-            category="OTHER",
-            reason="Event or webinar rescheduling notice detected."
-        )
-
-    # 5. Positive signals: Assessment invitations
-    assessment_signals = [
-        "assessment", "coding test", "hackerrank", "hackerearth",
-        "codility", "mettl", "online test", "technical assessment"
-    ]
-    if any(sig in full_sample for sig in assessment_signals):
-        return RelevanceDecision(
-            is_relevant=True,
-            confidence=0.95,
-            category="ASSESSMENT_INVITATION",
-            reason="Online assessment or technical coding test invitation detected."
-        )
-
-    # 6. Positive signals: Interview invitations
-    interview_signals = [
-        "interview", "discussion", "technical screen", "round 1", "round 2",
-        "schedule a call", "hiring manager discussion"
-    ]
-    if any(sig in full_sample for sig in interview_signals):
-        return RelevanceDecision(
-            is_relevant=True,
-            confidence=0.95,
-            category="INTERVIEW_INVITATION",
-            reason="Interview invitation or scheduling communication detected."
-        )
-
-    # 7. Positive signals: Offer letters
-    offer_signals = ["offer letter", "pleased to offer", "congratulations on your offer"]
-    if any(sig in full_sample for sig in offer_signals):
-        return RelevanceDecision(
-            is_relevant=True,
-            confidence=0.98,
-            category="OFFER_LETTER",
-            reason="Job offer or compensation package communication detected."
-        )
-
-    # 8. Positive signals: Rejection notices
-    rejection_signals = [
-        "regret to inform", "move forward with other candidates",
-        "will keep your profile on file", "not moving forward",
-        "decided to pursue other applicants", "unfortunately"
-    ]
-    if any(sig in full_sample for sig in rejection_signals) and any(kw in full_sample for kw in ["application", "candidacy", "role"]):
-        return RelevanceDecision(
-            is_relevant=True,
-            confidence=0.95,
-            category="REJECTION",
-            reason="Application rejection notification detected."
-        )
-
-    # 9. Positive signals: Application viewed / recruiter interaction updates
-    viewed_signals = [
-        "application was viewed",
-        "application viewed",
-        "recruiter viewed your application",
-        "viewed your application",
-        "application was downloaded",
-        "recruiter downloaded your resume",
-        "application has been shortlisted",
-    ]
-    if any(sig in full_sample for sig in viewed_signals):
-        return RelevanceDecision(
-            is_relevant=True,
-            confidence=0.95,
-            category="APPLICATION_CONFIRMATION",
-            reason="Application viewed or recruiter activity update on submitted application detected."
-        )
-
-    # 10. Positive signals: Application confirmations
-    confirmation_signals = [
-        "application received", "thank you for applying", "thank you for your application",
-        "we have received your application", "your application has been submitted",
-        "keep track of your application", "next steps regarding your application"
-    ]
-    if any(sig in full_sample for sig in confirmation_signals):
-        return RelevanceDecision(
-            is_relevant=True,
-            confidence=0.95,
-            category="APPLICATION_CONFIRMATION",
-            reason="Definitive application submission confirmation detected."
-        )
-
-    # Default fallback: If Layer 1 passed, evaluate general keywords
+    # Phase 3: Layer 1 Fallback Match
     if is_layer1_candidate(subject, sender):
         return RelevanceDecision(
             is_relevant=True,
