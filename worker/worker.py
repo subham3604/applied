@@ -80,6 +80,7 @@ def run_poll_cycle(
             emails = fetch_new_emails(last_checked_at=last_checked_at, service=service)
         except Exception as fetch_err:
             logger.error("Error fetching emails from Gmail API: %s", fetch_err, exc_info=True)
+            summary["error"] = str(fetch_err)
             return summary
 
         logger.info("Discovered %d candidate email(s) for LangGraph processing.", len(emails))

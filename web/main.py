@@ -653,13 +653,26 @@ def get_worker_status(db: Session = Depends(get_db)):
     }
 
 
-@app.post("/api/worker/sync")
-def trigger_worker_sync():
+@app.api_route("/api/worker/sync", methods=["GET", "POST"])
+def trigger_worker_sync(background: bool = False):
     """
-    Manually triggers an immediate autonomous Gmail polling and state machine cycle.
+    Triggers an immediate autonomous Gmail polling and state machine cycle.
+    Supports both GET & POST.
+    If background=true is specified (recommended for external cron/ping services),
+    the sync cycle is dispatched asynchronously in a background thread and returns 200 OK
+    immediately, eliminating HTTP gateway timeouts caused by Render free-tier cold starts.
     """
+    global _is_syncing
     if _is_syncing:
         return {"success": False, "message": "A Gmail sync cycle is already in progress."}
+
+    if background:
+        threading.Thread(target=_run_worker_sync_safe, daemon=True).start()
+        return {
+            "success": True,
+            "message": "Gmail sync cycle triggered in background.",
+            "status": "running"
+        }
 
     summary = _run_worker_sync_safe()
     if isinstance(summary, dict) and "error" in summary:
