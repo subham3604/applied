@@ -21,24 +21,67 @@ load_dotenv()
 logger = logging.getLogger("gmail_filter")
 
 # ==============================================================================
-# Filter Constants (from SYSTEM_DESIGN.md Section 4)
+# Filter Constants (Comprehensive Lifecycle Coverage for All Pipeline Stages)
 # ==============================================================================
 
 POSITIVE_SUBJECT_TERMS = [
+    # --- Stage 1: Applications, Confirmations & Status Updates (APPLIED / REJECTED) ---
     '"application received"',
     '"thank you for applying"',
+    '"thanks for applying"',
     '"thank you for your application"',
     '"your application"',
     '"we have received your application"',
     '"keep track of your application"',
-    '"you applied for 1 job"',  # Naukri single-application summary
-    "interview",
-    "assessment",
-    '"offer letter"',
+    '"you applied for 1 job"',          # Naukri single-application summary (multi-job digests excluded)
+    '"thank you for your interest"',    # Workday / enterprise career portals (e.g. Maersk)
+    '"thanks for your interest"',
+    '"application update"',            # e.g. Visa, Workday
+    '"job application"',               # e.g. Texas Instruments, Pearson ("Your recent job application for...")
+    "application",                      # Core domain anchor for ATS confirmation/update subjects
+    '"your candidacy"',                # e.g. "Update regarding your candidacy"
+
+    # --- Stage 2: Online Assessments & Coding Challenges (OA_PENDING) ---
+    "assessment",                       # e.g. "Online Assessment Invitation", "Coding Assessment"
+    "challenge",
+    '"coding challenge"',
+    '"coding test"',
+    "hackerrank",
+    "codility",
+    "codesignal",
+    "hackerearth",
+    "testgorilla",
+    "hirevue",
+    "mettl",
+    '"take-home"',
+
+    # --- Stage 3: Interviews & Recruiter Engagement (INTERVIEW_ROUND) ---
+    "interview",                        # e.g. "Technical Interview Invitation", "Interview Schedule"
+    '"phone screen"',
+    '"recruiter screen"',
     '"next steps"',
+    '"next round"',
+    "scheduling",
+
+    # --- Stage 4: Offers (OFFER) ---
+    '"offer letter"',
+    '"job offer"',
+    '"offer of employment"',
+    '"formal offer"',
+]
+
+POSITIVE_ATS_DOMAINS = [
+    "myworkday.com",
+    "greenhouse.io",
+    "lever.co",
+    "ashbyhq.com",
+    "smartrecruiters.com",
+    "jobvite.com",
+    "icims.com",
 ]
 
 NEGATIVE_SUBJECT_TERMS = [
+    # Pre-application marketing, alerts, and promotions
     '"apply now"',
     '"invited to apply"',
     '"is a match"',
@@ -47,17 +90,30 @@ NEGATIVE_SUBJECT_TERMS = [
     '"saved job"',
     '"recommended for you"',
     '"perfect match"',
-    '"see what employees have to say"',  # AmbitionBox review nudges
+    '"jobs applied by other"',          # Naukri promotional alert
+    '"jobs on "',                       # Naukri multi-job batch digests (e.g. "You applied for 12 jobs on 24 Sep")
+    '"loan offer"',                     # Bank loan promotions
+    '"credit card"',
+    '"personal loan"',
+    '"see what employees have to say"', # AmbitionBox review nudges
+
+    # Security, OTP, and 2FA emails
     '"security code"',                  # Greenhouse OTP emails
     '"verify your identity"',           # Amex and similar identity checks
     '"verification code"',
     '"one-time passcode"',
     '"confirm your identity"',
     '"passcode"',
+    '"third-party oauth application"',  # Developer OAuth notifications (e.g. GitHub/Google)
 ]
 
 BLOCKED_SENDERS = [
-    "ambitionbox.com",  # review nudges triggered by Naukri applications
+    "jobalerts-noreply@linkedin.com",   # Daily automated LinkedIn job alert digest
+    "ambitionbox.com",                  # Review nudges triggered by job applications
+    "noreply@github.com",               # Developer notifications containing word "application"
+    "hdfcbank.com",                     # Promotional bank notifications containing "offer"
+    "hdfcbank.bank",
+    "communications.sbi.co.in",
 ]
 
 RELEVANCE_GATE_PROMPT = """You are a precision filter for an autonomous job application tracking system.
@@ -158,8 +214,8 @@ def build_gmail_query(last_checked_at: datetime) -> str:
     """
     Constructs an optimized Gmail search query executing server-side keyword filtering.
     
-    Combines timestamp threshold, grouped positive subject keywords, negative subject
-    exclusions, and blocked sender domains according to Section 4 of SYSTEM_DESIGN.md.
+    Combines timestamp threshold, grouped positive subject keywords, direct ATS sender
+    domains, negative subject exclusions, and blocked sender domains according to SYSTEM_DESIGN.md.
     
     Args:
         last_checked_at: Timestamp threshold (only search emails received after this time).
@@ -168,7 +224,9 @@ def build_gmail_query(last_checked_at: datetime) -> str:
         Formatted Gmail query string.
     """
     ts = int(last_checked_at.timestamp())
-    positive = " OR ".join(f"subject:{t}" for t in POSITIVE_SUBJECT_TERMS)
+    subject_queries = [f"subject:{t}" for t in POSITIVE_SUBJECT_TERMS]
+    ats_queries = [f"from:{d}" for d in POSITIVE_ATS_DOMAINS]
+    positive = " OR ".join(subject_queries + ats_queries)
     negative = " ".join(f"-subject:{t}" for t in NEGATIVE_SUBJECT_TERMS)
     blocked = " ".join(f"-from:{d}" for d in BLOCKED_SENDERS)
 
@@ -202,7 +260,12 @@ def is_layer1_candidate(subject: str, sender: str = "") -> bool:
         if term in subject_clean:
             return False
 
-    # 3. Positive terms check
+    # 3. Direct ATS domain check (always candidate unless vetoed by negative rule)
+    for domain in POSITIVE_ATS_DOMAINS:
+        if domain.lower() in sender_clean:
+            return True
+
+    # 4. Positive terms check
     for raw_term in POSITIVE_SUBJECT_TERMS:
         term = raw_term.strip('"').lower()
         if term in subject_clean:

@@ -84,16 +84,33 @@ def test_build_gmail_query_syntax():
 # ==============================================================================
 
 def test_layer1_positive_matches():
-    """Verify legitimate application subjects pass Layer 1."""
+    """Verify legitimate application subjects across all lifecycle stages pass Layer 1."""
     valid_subjects = [
+        # Stage 1: Applications, Confirmations & Rejections
         "Application Received: Senior Backend Engineer at Zyntrix",
         "Thank you for applying to Google",
         "Your application for AI Systems Engineer at PhonePe",
-        "Interview Invitation: Technical Screen with Uber",
-        "Online Assessment: HackerRank test for Swiggy",
-        "Offer Letter - Staff Software Engineer at Datadog",
-        "Next steps regarding your application at Microsoft",
+        "Thank you for your interest in A.P Moller Maersk Group",
+        "Visa - Application Update",
+        "Your recent job application for Software Development Engineer - 25017217",
+        "Update on your UiPath application: Software Engineer 1",
         "You applied for 1 job on Naukri.com",
+        "Your candidacy for Senior Developer at Shopify",
+        
+        # Stage 2: Assessments (OA_PENDING)
+        "Online Assessment: HackerRank test for Swiggy",
+        "Your Codility Coding Challenge is ready",
+        "CodeSignal General Coding Assessment Invitation",
+        "Technical take-home challenge for Acme Corp",
+        
+        # Stage 3: Interviews (INTERVIEW_ROUND)
+        "Interview Invitation: Technical Screen with Uber",
+        "Recruiter phone screen scheduling - Netflix",
+        "Next steps regarding your application at Microsoft",
+        
+        # Stage 4: Offers (OFFER)
+        "Offer Letter - Staff Software Engineer at Datadog",
+        "Job Offer: Senior AI Engineer at Anthropic",
     ]
     for sub in valid_subjects:
         assert is_layer1_candidate(sub, sender="jobs@company.com") is True, f"Failed for: {sub}"
@@ -121,9 +138,16 @@ def test_layer1_negative_exclusions_take_precedence():
         "Your saved job alert: 5 jobs is a match for your profile",
         # AmbitionBox review nudge
         "See what employees have to say about your application company",
+        # Naukri multi-job batch digests (>1 job)
+        "You applied for 12 jobs on 24 Sep",
+        "You applied for 5 jobs on 23 Sep",
+        # Naukri promotional alert
+        "Subham, check out jobs applied by other Software Engineer",
+        # Third-party OAuth notifications containing the word "application"
+        "[GitHub] A third-party OAuth application has been added to your account",
     ]
     for sub in excluded_cases:
-        assert is_layer1_candidate(sub, sender="noreply@greenhouse.io") is False, f"Should be excluded: {sub}"
+        assert is_layer1_candidate(sub, sender="noreply@service.com") is False, f"Should be excluded: {sub}"
 
 
 def test_layer1_blocked_senders():
