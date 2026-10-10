@@ -247,8 +247,8 @@ def fetch_new_emails(
     """
     gmail = service or get_gmail_service()
     if not gmail:
-        logger.warning("Gmail service is unavailable. Skipping fetch.")
-        return []
+        logger.warning("Gmail service is unavailable. Check credentials or OAuth configuration.")
+        raise RuntimeError("Gmail service is unavailable. Check credentials or OAuth configuration.")
 
     query = build_gmail_query(last_checked_at)
     logger.info("Executing Gmail API query: %s", query)

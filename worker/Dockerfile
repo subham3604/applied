@@ -13,8 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY worker/requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy database layer and worker service modules
+# Copy database layer, web layer (shared models/services), and worker service modules
 COPY db/ /app/db/
+COPY web/ /app/web/
 COPY worker/ /app/worker/
 
 ENV PYTHONPATH=/app

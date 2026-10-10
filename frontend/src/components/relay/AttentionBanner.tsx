@@ -84,12 +84,6 @@ export function AttentionBanner({
   // Filter out demo-seeded items unless ?demo=true is present in the URL
   const displayItems = items.filter((it) => {
     if (it.source === "DEMO") return isDemoMode;
-    if (
-      it.sender === "recruiting@bundltechnologies.com" ||
-      it.sender === "talent-team@stripe.com"
-    ) {
-      return isDemoMode;
-    }
     return true;
   });
 

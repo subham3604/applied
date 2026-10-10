@@ -17,8 +17,8 @@ All response shapes match the TypeScript types in src/lib/relay-data.ts exactly.
 """
 
 import os
-import re
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
@@ -34,6 +34,7 @@ from web.queries import get_pipeline_metrics
 from web.services.pipeline import PipelineResult, process_raw_jd
 from web.services.rag_engine import embed_text
 from web.services.state_controller import apply_manual_override, apply_manual_update
+from worker.entity_resolution import normalize_company_name
 
 import logging
 import threading
@@ -44,14 +45,54 @@ logger = logging.getLogger("web.main")
 
 _worker_scheduler: Optional[BackgroundScheduler] = None
 _is_syncing: bool = False
+_sync_started_at: Optional[datetime] = None
+_sync_lock = threading.Lock()
+SYNC_TIMEOUT_SECONDS = 300  # 5 minutes safety timeout
+SYNC_ADVISORY_LOCK_ID = 849201928371
 
 
 def _run_worker_sync_safe():
-    global _is_syncing
-    if _is_syncing:
-        logger.info("Worker sync already in progress, skipping concurrent run.")
-        return {"status": "already_running"}
-    _is_syncing = True
+    global _is_syncing, _sync_started_at
+    now = datetime.now(timezone.utc)
+    with _sync_lock:
+        if _is_syncing:
+            if _sync_started_at and (now - _sync_started_at).total_seconds() > SYNC_TIMEOUT_SECONDS:
+                logger.warning(
+                    "Previous worker sync cycle exceeded safety timeout (%ds); resetting sync lock.",
+                    SYNC_TIMEOUT_SECONDS,
+                )
+                _is_syncing = False
+            else:
+                logger.info("Worker sync already in progress, skipping concurrent run.")
+                return {"status": "already_running"}
+        _is_syncing = True
+        _sync_started_at = now
+
+    # Acquire distributed PostgreSQL advisory lock if database is reachable
+    db_lock_session = None
+    try:
+        from sqlalchemy import text
+        db_lock_session = SessionLocal()
+        locked = db_lock_session.execute(
+            text("SELECT pg_try_advisory_lock(:id)"),
+            {"id": SYNC_ADVISORY_LOCK_ID}
+        ).scalar()
+        if not locked:
+            logger.info("Another process holds the PostgreSQL worker sync advisory lock.")
+            with _sync_lock:
+                _is_syncing = False
+                _sync_started_at = None
+            db_lock_session.close()
+            return {"status": "already_running"}
+    except Exception as lock_err:
+        logger.debug("Database advisory lock skipped or unavailable: %s", lock_err)
+        if db_lock_session:
+            try:
+                db_lock_session.close()
+            except Exception:
+                pass
+            db_lock_session = None
+
     try:
         from worker.worker import run_poll_cycle
         summary = run_poll_cycle()
@@ -61,21 +102,28 @@ def _run_worker_sync_safe():
         logger.error("Error during worker sync execution: %s", exc, exc_info=True)
         return {"error": str(exc)}
     finally:
-        _is_syncing = False
+        if db_lock_session:
+            try:
+                from sqlalchemy import text
+                db_lock_session.execute(
+                    text("SELECT pg_advisory_unlock(:id)"),
+                    {"id": SYNC_ADVISORY_LOCK_ID}
+                )
+                db_lock_session.close()
+            except Exception as unlock_err:
+                logger.debug("Could not release advisory lock: %s", unlock_err)
+
+        with _sync_lock:
+            _is_syncing = False
+            _sync_started_at = None
 
 
 # ==============================================================================
-# App & CORS
+# App Lifespan & CORS
 # ==============================================================================
 
-app = FastAPI(
-    title="Relay API",
-    description="Backend API for the Relay autonomous job application tracker.",
-    version="1.0.0",
-)
-
-@app.on_event("startup")
-def on_startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global _worker_scheduler
     try:
         Base.metadata.create_all(bind=engine)
@@ -106,12 +154,18 @@ def on_startup():
         logger.info("Triggering initial background Gmail sync on startup...")
         threading.Thread(target=_run_worker_sync_safe, daemon=True).start()
 
+    yield
 
-@app.on_event("shutdown")
-def on_shutdown():
-    global _worker_scheduler
     if _worker_scheduler and _worker_scheduler.running:
         _worker_scheduler.shutdown(wait=False)
+
+
+app = FastAPI(
+    title="Relay API",
+    description="Backend API for the Relay autonomous job application tracker.",
+    version="1.0.0",
+    lifespan=lifespan,
+)
 
 
 
@@ -416,24 +470,6 @@ def get_application(app_id: str, db: Session = Depends(get_db)):
     if not app_row:
         raise HTTPException(status_code=404, detail="Application not found")
 
-    # If application has no active resume snapshot, auto-generate on the fly
-    active_snaps = [s for s in (app_row.resume_snapshots or []) if s.is_active]
-    if not active_snaps:
-        try:
-            from web.services.resume_generator import generate_tailored_resume, save_resume_snapshot
-            jd_context = f"Role: {app_row.role_title} at {app_row.company_name}.\n{app_row.job_description_raw or ''}".strip()
-            resume_res = generate_tailored_resume(jd_text=jd_context, db=db)
-            snapshot = save_resume_snapshot(
-                application_id=app_row.id,
-                markdown_content=resume_res.markdown_content,
-                vault_ids=resume_res.retrieved_vault_ids,
-                is_user_edited=False,
-                db=db,
-            )
-            app_row.resume_snapshots = [snapshot]
-        except Exception as resume_err:
-            logger.warning("Could not on-demand generate resume snapshot for %s: %s", app_row.id, resume_err)
-
     return _serialize_application(app_row)
 
 
@@ -709,17 +745,28 @@ def get_worker_status(db: Session = Depends(get_db)):
 
 
 @app.api_route("/api/worker/sync", methods=["GET", "POST"])
-def trigger_worker_sync(background: bool = False):
+def trigger_worker_sync(background: bool = False, force: bool = False):
     """
     Triggers an immediate autonomous Gmail polling and state machine cycle.
     Supports both GET & POST.
     If background=true is specified (recommended for external cron/ping services),
     the sync cycle is dispatched asynchronously in a background thread and returns 200 OK
     immediately, eliminating HTTP gateway timeouts caused by Render free-tier cold starts.
+    If force=true is specified, any hung in-progress sync flag is forcefully reset.
     """
-    global _is_syncing
-    if _is_syncing:
-        return {"success": False, "message": "A Gmail sync cycle is already in progress."}
+    global _is_syncing, _sync_started_at
+    with _sync_lock:
+        if force:
+            _is_syncing = False
+            _sync_started_at = None
+
+        if _is_syncing:
+            now = datetime.now(timezone.utc)
+            if _sync_started_at and (now - _sync_started_at).total_seconds() > SYNC_TIMEOUT_SECONDS:
+                _is_syncing = False
+                _sync_started_at = None
+            else:
+                return {"success": False, "message": "A Gmail sync cycle is already in progress."}
 
     if background:
         threading.Thread(target=_run_worker_sync_safe, daemon=True).start()
@@ -1012,10 +1059,7 @@ def get_attention_items(
     """
     query = db.query(InboundTriageItem).filter(InboundTriageItem.status == "PENDING")
     if not include_demo:
-        query = query.filter(
-            InboundTriageItem.source != "DEMO",
-            ~InboundTriageItem.sender.in_(["recruiting@bundltechnologies.com", "talent-team@stripe.com"])
-        )
+        query = query.filter(InboundTriageItem.source != "DEMO")
     items = query.order_by(InboundTriageItem.created_at.desc()).all()
     return [_serialize_triage_item(item, db) for item in items]
 
@@ -1111,7 +1155,7 @@ def create_application_from_attention(
     except ValueError:
         status_enum = ApplicationStatus.APPLIED
 
-    canonical_company = re.sub(r"[^\w\s]", "", req.company_name).strip().lower()
+    canonical_company = normalize_company_name(req.company_name)
     new_app = Application(
         id=uuid.uuid4(),
         company_name=req.company_name.strip(),
@@ -1129,16 +1173,17 @@ def create_application_from_attention(
 
     # Auto-generate grounded tailored resume snapshot from vault
     try:
-        from web.services.resume_generator import generate_tailored_resume, save_resume_snapshot
-        jd_context = f"Role: {new_app.role_title} at {new_app.company_name}.\n{item.raw_body or ''}".strip()
-        resume_res = generate_tailored_resume(jd_text=jd_context, db=db)
-        save_resume_snapshot(
-            application_id=new_app.id,
-            markdown_content=resume_res.markdown_content,
-            vault_ids=resume_res.retrieved_vault_ids,
-            is_user_edited=False,
-            db=db,
-        )
+        with db.begin_nested():
+            from web.services.resume_generator import generate_tailored_resume, save_resume_snapshot
+            jd_context = f"Role: {new_app.role_title} at {new_app.company_name}."
+            resume_res = generate_tailored_resume(jd_text=jd_context, db=db)
+            save_resume_snapshot(
+                application_id=new_app.id,
+                markdown_content=resume_res.markdown_content,
+                vault_ids=resume_res.retrieved_vault_ids,
+                is_user_edited=False,
+                db=db,
+            )
     except Exception as resume_err:
         logger.warning("Could not auto-generate resume snapshot from attention item: %s", resume_err)
 

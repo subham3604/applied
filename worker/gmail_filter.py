@@ -331,18 +331,12 @@ class HeuristicRule:
             return self.predicate(full_sample, body_snippet, sender_lower)
 
         # Sender check (supports standalone or combined signals)
-        sender_matched = bool(self.sender_signals and any(s in sender_lower for s in self.sender_signals))
-        signal_matched = bool(self.any_signals and any(sig in full_sample for sig in self.any_signals))
+        if self.sender_signals and not any(s in sender_lower for s in self.sender_signals):
+            return False
 
-        if self.sender_signals and not self.any_signals:
-            if not sender_matched:
-                return False
-        elif self.any_signals and not self.sender_signals:
-            if not signal_matched:
-                return False
-        elif self.sender_signals and self.any_signals:
-            if not (sender_matched or signal_matched):
-                return False
+        # Signal check (supports standalone or combined signals)
+        if self.any_signals and not any(sig in full_sample for sig in self.any_signals):
+            return False
 
         # Context terms constraint: at least one must be present if configured
         if self.context_signals and not any(kw in full_sample for kw in self.context_signals):
@@ -407,6 +401,16 @@ VETO_RULES: Tuple[HeuristicRule, ...] = (
         ),
         body_regex=RE_OTP_CODE,
     ),
+    # 1b. Password reset instructions / account security links
+    HeuristicRule(
+        category="OTP_SECURITY_CODE",
+        is_relevant=False,
+        confidence=0.98,
+        reason="Detected account password reset instructions.",
+        any_signals=(
+            "password reset", "reset password", "reset your password", "reset password instructions",
+        ),
+    ),
     # 2. Blocked senders or AmbitionBox review nudges
     HeuristicRule(
         category="PROMOTIONAL_INVITE",
@@ -414,6 +418,12 @@ VETO_RULES: Tuple[HeuristicRule, ...] = (
         confidence=0.98,
         reason="AmbitionBox review nudge detected.",
         sender_signals=("ambitionbox",),
+    ),
+    HeuristicRule(
+        category="PROMOTIONAL_INVITE",
+        is_relevant=False,
+        confidence=0.98,
+        reason="Employee review nudge detected.",
         any_signals=("see what employees have to say",),
     ),
     # 3. Promotional job recommendations and alerts (unless confirming application receipt)
@@ -425,7 +435,7 @@ VETO_RULES: Tuple[HeuristicRule, ...] = (
         any_signals=(
             "apply now", "invited to apply", "is a match", "job alert", "jobs for you",
             "recommended for you", "perfect match", "saved job", "jobs you might like",
-            "explore similar jobs", "based on your profile",
+            "explore similar jobs", "based on your profile", "you must apply online",
         ),
         none_signals=(
             "we have received your application", "application received", "thank you for applying",
@@ -490,32 +500,55 @@ VETO_RULES: Tuple[HeuristicRule, ...] = (
         any_signals=("postponed", "rescheduled"),
         context_signals=("session", "webinar"),
     ),
+    # 10. Public competitive programming contests, open hackathons, challenges
+    HeuristicRule(
+        category="OTHER",
+        is_relevant=False,
+        confidence=0.95,
+        reason="Public coding challenge, hackathon, or prize competition detected.",
+        any_signals=(
+            "prize pool", "global algorithms challenge", "competitions challenge",
+            "challenges@hackerearth.com", "participate in the challenge",
+        ),
+    ),
+    # 11. Third-party interview prep guides and mock interview newsletters
+    HeuristicRule(
+        category="PROMOTIONAL_INVITE",
+        is_relevant=False,
+        confidence=0.95,
+        reason="Mock interview practice simulation or prep newsletter detected.",
+        any_signals=(
+            "mock interview simulation", "interview preparation guide",
+            "launch your mock interview", "top coding questions in amazon",
+            "frequently asked questions in amazon",
+        ),
+    ),
+    # 12. Headhunter / agency unsolicited cold outreach
+    HeuristicRule(
+        category="PROMOTIONAL_INVITE",
+        is_relevant=False,
+        confidence=0.95,
+        reason="External search agency / headhunter cold pitch detected.",
+        any_signals=(
+            "headhunt their next", "retained by the leadership", "pitch the opportunity",
+            "search partners", "executive search", "retained search",
+        ),
+    ),
+    # 13. Career newsletters, editorials, and hiring trend blog posts
+    HeuristicRule(
+        category="OTHER",
+        is_relevant=False,
+        confidence=0.95,
+        reason="Career newsletter, blog breakdown, or hiring trend analysis detected.",
+        any_signals=(
+            "tech career insider", "in this edition, we analyze", "breakdown on the blog",
+            "weekly digest", "newsletter digest",
+        ),
+    ),
 )
 
 INTENT_RULES: Tuple[HeuristicRule, ...] = (
-    # 1. Assessment / technical coding test invitations
-    HeuristicRule(
-        category="ASSESSMENT_INVITATION",
-        is_relevant=True,
-        confidence=0.95,
-        reason="Online assessment or technical coding test invitation detected.",
-        any_signals=(
-            "assessment", "coding test", "hackerrank", "hackerearth",
-            "codility", "mettl", "online test", "technical assessment",
-        ),
-    ),
-    # 2. Interview invitations & scheduling communications
-    HeuristicRule(
-        category="INTERVIEW_INVITATION",
-        is_relevant=True,
-        confidence=0.95,
-        reason="Interview invitation or scheduling communication detected.",
-        any_signals=(
-            "interview", "discussion", "technical screen", "round 1", "round 2",
-            "schedule a call", "hiring manager discussion",
-        ),
-    ),
-    # 3. Formal job offer letters
+    # 1. Formal job offer letters (highest priority lifecycle state)
     HeuristicRule(
         category="OFFER_LETTER",
         is_relevant=True,
@@ -523,18 +556,70 @@ INTENT_RULES: Tuple[HeuristicRule, ...] = (
         reason="Job offer or compensation package communication detected.",
         any_signals=("offer letter", "pleased to offer", "congratulations on your offer"),
     ),
-    # 4. Application rejection notifications (must have role/application context)
+    # 2. Application rejection notifications (must precede interview/assessment to avoid matching interview retrospectives)
     HeuristicRule(
         category="REJECTION",
         is_relevant=True,
         confidence=0.95,
         reason="Application rejection notification detected.",
         any_signals=(
-            "regret to inform", "move forward with other candidates",
-            "will keep your profile on file", "not moving forward",
-            "decided to pursue other applicants", "unfortunately",
+            "regret to inform", "move forward with other candidates", "moving forward with other candidates",
+            "will keep your profile on file", "will keep your resume on file", "not moving forward",
+            "decided to pursue other applicants", "decided to pursue other candidates",
+            "decided to proceed with other candidates", "progress with other candidates",
+            "decided not to move forward", "not to move forward", "decided not to advance",
+            "unfortunately, we have decided", "unfortunately we have decided",
+            "unfortunately, we are unable to take", "unable to take your candidacy forward",
+            "unfortunately, we will not", "unfortunately we will not",
+            "have not been selected", "not been selected for this role", "were not selected for the role",
+            "not selected for this position", "sorry to let you know", "regrettably",
         ),
-        context_signals=("application", "candidacy", "role"),
+        context_signals=("application", "candidacy", "role", "interview", "team", "position", "interest"),
+    ),
+    # 3. Assessment / technical coding test invitations
+    HeuristicRule(
+        category="ASSESSMENT_INVITATION",
+        is_relevant=True,
+        confidence=0.95,
+        reason="Online assessment or technical coding test invitation detected.",
+        any_signals=(
+            "coding test", "online test", "technical assessment",
+            "assessment invitation", "coding challenge", "take your assessment",
+            "complete your assessment", "assessment window", "test invitation",
+            "hiring test", "take-home", "take home", "general coding assessment",
+            "hackerrank assessment", "hackerrank test", "assessment link",
+            "codility assessment", "codility test", "mettl assessment",
+            "codesignal assessment", "test link", "assessment – mandatory",
+            "timed assessment", "online coding challenge",
+        ),
+        none_signals=(
+            "regret to inform", "move forward with other candidates", "moving forward with other candidates",
+            "will keep your profile", "not moving forward", "decided to pursue other",
+            "password reset", "reset password", "prize pool", "global algorithms challenge",
+            "completed your", "completion receipt",
+        ),
+    ),
+    # 4. Interview invitations & scheduling communications
+    HeuristicRule(
+        category="INTERVIEW_INVITATION",
+        is_relevant=True,
+        confidence=0.95,
+        reason="Interview invitation or scheduling communication detected.",
+        any_signals=(
+            "interview", "schedule a discussion", "technical screen", "round 1", "round 2",
+            "schedule a call", "hiring manager discussion", "schedule an interview",
+            "zoom interview", "google meet interview", "introductory interview with you",
+            "pick a slot on my calendly", "invite you to interview", "round discussion",
+            "technical discussion", "interview discussion",
+        ),
+        none_signals=(
+            "regret to inform", "move forward with other candidates", "moving forward with other candidates",
+            "will keep your profile on file", "not moving forward", "decided to pursue other",
+            "decided not to advance", "mock interview simulation", "interview preparation guide",
+            "feedback about our interview", "tell us about your interview",
+            "interview experience survey", "take the survey", "if you’re selected for an interview",
+            "if you're selected for an interview", "pitch the opportunity", "retained by the leadership",
+        ),
     ),
     # 5. Application viewed / recruiter activity updates on submitted roles
     HeuristicRule(
@@ -562,6 +647,8 @@ INTENT_RULES: Tuple[HeuristicRule, ...] = (
             "application received", "thank you for applying", "thank you for your application",
             "we have received your application", "your application has been submitted",
             "keep track of your application", "next steps regarding your application",
+            "online submission", "submission received", "next steps for your application",
+            "completed your coding assessment", "you have completed your",
         ),
     ),
 )

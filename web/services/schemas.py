@@ -3,46 +3,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator
 
 
-def normalize_company_name(name: str) -> str:
-    """
-    Normalize company names for entity resolution and deduplication.
-    Strips legal suffixes, punctuation, and common generic qualifiers.
-    Example: 'Bundl Technologies Pvt Ltd' -> 'bundl'
-             'Zomato Media Private Limited' -> 'zomato'
-             'Swiggy' -> 'swiggy'
-    """
-    if not name:
-        return ""
-    
-    # Lowercase and clean whitespace
-    normalized = name.lower().strip()
-    
-    # Remove content in parentheses e.g. "Google (Alphabet)" -> "Google"
-    normalized = re.sub(r"\(.*?\)", "", normalized).strip()
-
-    # Normalize punctuation and dots to space first: e.g. "Pvt. Ltd." -> "pvt ltd"
-    normalized = re.sub(r"[,\.\-_/]+", " ", normalized)
-    normalized = re.sub(r"\s+", " ", normalized).strip()
-
-    # Common legal and corporate qualifiers
-    suffixes = [
-        "private limited", "pvt ltd", "pvt", "ltd",
-        "technologies", "technology", "tech", "solutions", "services",
-        "media", "corporation", "corp", "incorporated", "inc",
-        "enterprises", "group", "holdings", "india", "global", "labs"
-    ]
-    
-    # Sort suffixes by length descending so longer phrases match first
-    suffixes.sort(key=len, reverse=True)
-    
-    for suffix in suffixes:
-        pattern = rf"\b{re.escape(suffix)}\b"
-        normalized = re.sub(pattern, "", normalized).strip()
-    
-    # Clean up residual multiple spaces
-    normalized = re.sub(r"\s+", " ", normalized).strip()
-    
-    return normalized or name.lower().strip()
+from worker.entity_resolution import normalize_company_name
 
 
 class JobApplication(BaseModel):

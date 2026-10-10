@@ -20,6 +20,7 @@ Key Features:
 
 from dataclasses import dataclass
 import logging
+import re
 from typing import Dict, List, Optional, Union
 
 from db.models import ApplicationStatus
@@ -87,23 +88,52 @@ class TransitionDecision:
 # ==============================================================================
 
 def detect_source_platform(sender: str = "", body_snippet: str = "") -> str:
-    """Identifies the hiring portal or system source from email metadata."""
-    combined = f"{sender} {body_snippet}".lower()
-    if "naukri" in combined:
+    """Identifies the hiring portal or system source from email metadata or text snippets."""
+    sender_lower = (sender or "").lower()
+    body_lower = (body_snippet or "").lower()
+
+    # Priority 1: Direct sender domain check
+    if re.search(r"@(?:[a-z0-9\-]+\.)?naukri(?:\.com)?\b", sender_lower):
         return "Naukri"
-    if "linkedin" in combined:
+    if re.search(r"@(?:[a-z0-9\-]+\.)?linkedin(?:\.com)?\b", sender_lower):
         return "LinkedIn"
-    if "greenhouse" in combined:
+    if re.search(r"@(?:[a-z0-9\-]+\.)?indeed(?:\.com)?\b", sender_lower):
+        return "Indeed"
+    if re.search(r"@(?:[a-z0-9\-]+\.)?(?:wellfound\.com|angel\.co|angellist\.com)\b", sender_lower):
+        return "Wellfound"
+    if re.search(r"@(?:[a-z0-9\-]+\.)?greenhouse(?:\.io)?\b", sender_lower):
         return "Greenhouse"
-    if "lever.co" in combined or "lever" in combined:
+    if re.search(r"@(?:[a-z0-9\-]+\.)?lever(?:\.co)?\b", sender_lower):
         return "Lever"
-    if "workday" in combined or "myworkdayjobs" in combined:
+    if re.search(r"@(?:[a-z0-9\-]+\.)?myworkday(?:jobs)?\.com\b", sender_lower):
         return "Workday"
-    if "smartrecruiters" in combined:
+    if re.search(r"@(?:[a-z0-9\-]+\.)?smartrecruiters(?:\.com)?\b", sender_lower):
         return "SmartRecruiters"
-    if "ashby" in combined:
+    if re.search(r"@(?:[a-z0-9\-]+\.)?ashby(?:hq)?(?:\.com)?\b", sender_lower):
+        return "Ashby"
+
+    # Priority 2: Text body signals (avoiding generic social media footer matches)
+    combined = f"{sender_lower} {body_lower}"
+    if re.search(r"\bnaukri(?:\.com)?\b", combined):
+        return "Naukri"
+    if re.search(r"\b(?:applied (?:on|via) linkedin|via linkedin|linkedin application|linkedin jobs?|jobs-noreply@linkedin)\b", combined) or "linkedin.com" in sender_lower:
+        return "LinkedIn"
+    if re.search(r"\bindeed(?:\.com)?\b", combined):
+        return "Indeed"
+    if re.search(r"\bwellfound\b|\bangel\.co\b|\bangellist\b", combined):
+        return "Wellfound"
+    if re.search(r"\bgreenhouse(?:\.io)?\b", combined):
+        return "Greenhouse"
+    if re.search(r"\blever\.co\b|\blever\b", combined):
+        return "Lever"
+    if re.search(r"\bmyworkday(?:jobs)?\.com\b|\bworkday\b", combined):
+        return "Workday"
+    if re.search(r"\bsmartrecruiters(?:\.com)?\b", combined):
+        return "SmartRecruiters"
+    if re.search(r"\bashby(?:hq)?(?:\.com)?\b", combined):
         return "Ashby"
     return "Direct"
+
 
 
 # ==============================================================================

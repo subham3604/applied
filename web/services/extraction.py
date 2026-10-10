@@ -8,8 +8,56 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from web.services.schemas import JobApplication, ExtractionResult
+from worker.state_machine import detect_source_platform
 
 logger = logging.getLogger("extraction_service")
+
+# Precompiled tech stack keywords and patterns
+TECH_ALIASES = [
+    ("Python", [re.compile(r"\bPython\b", re.IGNORECASE)]),
+    ("FastAPI", [re.compile(r"\bFastAPI\b", re.IGNORECASE)]),
+    ("Django", [re.compile(r"\bDjango\b", re.IGNORECASE)]),
+    ("Go", [re.compile(r"\bGo\b"), re.compile(r"\bGolang\b", re.IGNORECASE)]),
+    ("Java", [re.compile(r"\bJava\b")]),
+    ("Node.js", [re.compile(r"\bNode(?:\.js|js)?\b", re.IGNORECASE)]),
+    ("TypeScript", [re.compile(r"\bTypeScript\b", re.IGNORECASE), re.compile(r"\bTS\b")]),
+    ("JavaScript", [re.compile(r"\bJavaScript\b", re.IGNORECASE), re.compile(r"\bJS\b")]),
+    ("PostgreSQL", [re.compile(r"\bPostgreSQL\b", re.IGNORECASE), re.compile(r"\bPostgres\b", re.IGNORECASE)]),
+    ("MySQL", [re.compile(r"\bMySQL\b", re.IGNORECASE)]),
+    ("Redis", [re.compile(r"\bRedis\b", re.IGNORECASE)]),
+    ("Kafka", [re.compile(r"\bKafka\b", re.IGNORECASE)]),
+    ("RabbitMQ", [re.compile(r"\bRabbitMQ\b", re.IGNORECASE)]),
+    ("MongoDB", [re.compile(r"\bMongoDB\b", re.IGNORECASE)]),
+    ("Elasticsearch", [re.compile(r"\bElasticsearch\b", re.IGNORECASE)]),
+    ("Docker", [re.compile(r"\bDocker\b", re.IGNORECASE)]),
+    ("Kubernetes", [re.compile(r"\bKubernetes\b", re.IGNORECASE), re.compile(r"\bK8s\b", re.IGNORECASE)]),
+    ("AWS", [re.compile(r"\bAWS\b", re.IGNORECASE)]),
+    ("GCP", [re.compile(r"\bGCP\b", re.IGNORECASE)]),
+    ("pgvector", [re.compile(r"\bpgvector\b", re.IGNORECASE)]),
+    ("LangGraph", [re.compile(r"\bLangGraph\b", re.IGNORECASE)]),
+    ("LangChain", [re.compile(r"\bLangChain\b", re.IGNORECASE)]),
+    ("Instructor", [re.compile(r"\bInstructor\b", re.IGNORECASE)]),
+    ("Pydantic", [re.compile(r"\bPydantic\b", re.IGNORECASE)]),
+    ("SQLAlchemy", [re.compile(r"\bSQLAlchemy\b", re.IGNORECASE)]),
+    ("Alembic", [re.compile(r"\bAlembic\b", re.IGNORECASE)]),
+    ("Streamlit", [re.compile(r"\bStreamlit\b", re.IGNORECASE)]),
+    ("React", [re.compile(r"\bReact(?:\.js|js)?\b"), re.compile(r"\bReact Native\b", re.IGNORECASE)]),
+    ("Linux", [re.compile(r"\bLinux\b", re.IGNORECASE)]),
+]
+
+COMPANY_BLACKLIST = {
+    "us", "you", "the", "our", "this", "a", "an", "role", "position",
+    "the role", "the team", "the company", "the position", "the opportunity",
+    "the candidate", "the job", "careers", "we", "work", "team", "about us", "about you",
+    # Work modes and hiring descriptors that appear in parentheticals
+    "remote", "hybrid", "onsite", "on-site", "full-time", "fulltime", "part-time",
+    "contract", "contractual", "internship", "intern", "immediate joiner", "urgent",
+    "fresher", "experience", "years", "yrs", "day", "days",
+    # Common cities and countries to prevent location hijacking company name
+    "bengaluru", "bangalore", "gurugram", "gurgaon", "pune", "hyderabad", "mumbai",
+    "delhi", "noida", "chennai", "kolkata", "london", "berlin", "tokyo", "singapore",
+    "india", "usa", "united states", "uk"
+}
 
 EXTRACTION_SYSTEM_PROMPT = """You are an expert ATS (Applicant Tracking System) extraction engine.
 Your task is to analyze unstructured job description text pasted from job portals (such as Naukri, LinkedIn, Indeed, or career pages) and extract structured fields conforming strictly to the schema.
@@ -31,24 +79,46 @@ def _heuristic_fallback_parse(raw_text: str) -> JobApplication:
     """
     lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
     
-    # 1. Company extraction
+    # 1. Grammar-based company boundary extraction
     company = None
     company_match = re.search(r"(?:Company|Organization|Employer)\s*:\s*([^\n\(\-]+)", raw_text, re.IGNORECASE)
     if company_match:
-        company = company_match.group(1).strip()
-    else:
-        # Check for parenthetical brand: "Bundl Technologies Pvt Ltd (Swiggy)"
-        brand_match = re.search(r"\(([A-Za-z0-9\s]+)\)", raw_text[:250])
-        if brand_match and len(brand_match.group(1)) > 2:
-            company = brand_match.group(1).strip()
-        elif lines:
-            for l in lines[:5]:
-                for w in ["Swiggy", "Zomato", "PhonePe", "Amazon", "Google", "Microsoft", "Uber", "Flipkart"]:
-                    if w.lower() in l.lower():
-                        company = w
+        cand = company_match.group(1).strip()
+        if cand.lower() not in COMPANY_BLACKLIST:
+            company = cand
+    if not company:
+        # Check for parenthetical brand: e.g. "Bundl Technologies Pvt Ltd (Swiggy)"
+        brand_match = re.search(r"\(([A-Za-z0-9\s&.\-]+)\)", raw_text[:250])
+        if brand_match:
+            brand_cand = brand_match.group(1).strip()
+            if (
+                len(brand_cand) > 2
+                and brand_cand.lower() not in COMPANY_BLACKLIST
+                and not re.search(r"\b(remote|hybrid|onsite|full-time|part-time|contract|years?|yrs?|joiner|intern)\b", brand_cand, re.IGNORECASE)
+            ):
+                company = brand_cand
+
+        if not company and lines:
+            for l in lines[:8]:
+                # Patterns like: "At Zomato,", "About Swiggy:", "Join Google as...", "Careers at Uber"
+                hiring_match = re.search(
+                    r"(?:^|\b)(?:At|About|Join|Careers?\s+at)\s+([A-Z][A-Za-z0-9&.\s]{1,30}?)(?::|,|\s+is|\s+we|\s+as|\s*$)",
+                    l
+                )
+                if hiring_match:
+                    candidate = hiring_match.group(1).strip()
+                    if candidate.lower() not in COMPANY_BLACKLIST:
+                        company = candidate
                         break
-                if company:
-                    break
+                is_hiring_match = re.search(
+                    r"^([A-Z][A-Za-z0-9&.\s]{1,30}?)\s+is\s+(?:looking|seeking|hiring|expanding)",
+                    l
+                )
+                if is_hiring_match:
+                    candidate = is_hiring_match.group(1).strip()
+                    if candidate.lower() not in COMPANY_BLACKLIST:
+                        company = candidate
+                        break
 
     if not company:
         raise ValueError("Could not extract a valid company name from the provided text.")
@@ -81,41 +151,55 @@ def _heuristic_fallback_parse(raw_text: str) -> JobApplication:
         except ValueError:
             pass
 
-    # 4. Tech stack extraction
-    common_tech = [
-        "Python", "FastAPI", "Django", "Go", "Golang", "Java", "Node.js", "TypeScript", "JavaScript",
-        "PostgreSQL", "MySQL", "Redis", "Kafka", "RabbitMQ", "MongoDB", "Elasticsearch",
-        "Docker", "Kubernetes", "AWS", "GCP", "pgvector", "LangGraph", "LangChain",
-        "Instructor", "Pydantic", "SQLAlchemy", "Alembic", "Streamlit", "React", "Linux"
-    ]
+    # 4. Tech stack extraction via precompiled patterns
     detected_tech = []
-    for tech in common_tech:
-        pattern = rf"\b{re.escape(tech)}\b"
-        if re.search(pattern, raw_text, re.IGNORECASE):
-            detected_tech.append(tech)
+    for tech_name, patterns in TECH_ALIASES:
+        if any(pat.search(raw_text) for pat in patterns):
+            detected_tech.append(tech_name)
 
-    # 5. Location extraction
+    # 5. Generic work model and location extraction
     location = None
-    loc_match = re.search(r"(?:Location|Work Location)\s*:\s*([^\n]+)", raw_text, re.IGNORECASE)
+    loc_match = re.search(r"(?:Location|Work Location|Workplace|Office|Based in)\s*:\s*([^\n]+)", raw_text, re.IGNORECASE)
     if loc_match:
         location = loc_match.group(1).strip()
     else:
-        for loc in ["Bengaluru", "Bangalore", "Gurugram", "Gurgaon", "Pune", "Hyderabad", "Mumbai", "Remote"]:
-            if loc.lower() in raw_text.lower():
-                location = loc
+        model_match = re.search(r"\b(Remote|Hybrid|On-site|Onsite)\b", raw_text, re.IGNORECASE)
+        city_match = None
+        known_non_locations = {tech.lower() for tech, _ in TECH_ALIASES} | {"experience", "years", "skills", "engineering"}
+        for line in lines:
+            if any(cue in line.lower() for cue in ["location", "office", "based", "in ", "at ", "remote", "hybrid"]):
+                m = re.search(r"\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?),\s*([A-Z][a-zA-Z]+|[A-Z]{2})\b", line)
+                if m:
+                    cand_city = m.group(1).strip()
+                    cand_state = m.group(2).strip()
+                    if cand_city.lower() not in known_non_locations and cand_state.lower() not in known_non_locations:
+                        city_match = m
+                        break
+
+        # Check canonical global tech cities
+        canonical_cities = [
+            "Bengaluru", "Bangalore", "Gurugram", "Gurgaon", "Pune", "Hyderabad",
+            "Mumbai", "Delhi", "Noida", "Chennai", "Kolkata", "San Francisco",
+            "New York", "Seattle", "Austin", "London", "Berlin", "Singapore", "Tokyo"
+        ]
+        city_found = None
+        for c in canonical_cities:
+            if re.search(rf"\b{re.escape(c)}\b", raw_text, re.IGNORECASE):
+                city_found = c
                 break
 
-    # 6. Source platform extraction
-    platform = "Direct"
-    lower_text = raw_text.lower()
-    if "naukri" in lower_text:
-        platform = "Naukri"
-    elif "linkedin" in lower_text:
-        platform = "LinkedIn"
-    elif "indeed" in lower_text:
-        platform = "Indeed"
-    elif "wellfound" in lower_text or "angel" in lower_text:
-        platform = "Wellfound"
+        if model_match and (city_match or city_found):
+            resolved_city = city_match.group(0) if city_match else city_found
+            location = f"{resolved_city} ({model_match.group(1).title()})"
+        elif city_match:
+            location = city_match.group(0)
+        elif city_found:
+            location = city_found
+        elif model_match:
+            location = model_match.group(1).title()
+
+    # 6. Source platform extraction via unified state_machine platform detector
+    platform = detect_source_platform(body_snippet=raw_text)
 
     return JobApplication(
         company_name=company or "Direct Employer",
@@ -170,11 +254,12 @@ def extract_job_with_repair(
             circuit_broken=True,
         )
 
-    # Detect severely sparse or deliberately bad JD (e.g., fewer than 12 words or explicit marker)
+    # Detect severely sparse or deliberately bad JD (e.g., fewer than 12 words)
     cleaned_text = raw_text.strip()
-    if len(cleaned_text.split()) < 12 or "no company" in cleaned_text.lower():
+    if len(cleaned_text.split()) < 12:
         logger.warning(
-            "Input JD text is too sparse or explicitly malformed; circuit breaker tripped after %d retries.",
+            "Input JD text is too sparse (%d words); circuit breaker tripped after %d retries.",
+            len(cleaned_text.split()),
             max_retries
         )
         return ExtractionResult(

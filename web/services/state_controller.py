@@ -24,6 +24,8 @@ from db.models import Application, ApplicationStatus, EventSource, PipelineEvent
 from db.session import SessionLocal
 from web.services.schemas import JobEvent
 from worker.agent_state import ApplicationEventType
+from worker.gmail_filter import INTENT_RULES
+from worker.graph_agent import extract_deadline_from_text
 from worker.state_machine import evaluate_transition
 
 logger = logging.getLogger("state_controller")
@@ -96,25 +98,36 @@ def parse_status_update(
     # 2. Heuristic fallback for offline, fast, or error conditions
     if not extracted_event:
         lower = raw_text.lower()
+        event_type = ApplicationEventType.STATUS_UPDATE.value
 
-        if any(w in lower for w in ["regret", "not moving forward", "another candidate", "unfortunately", "rejected", "rejection"]):
-            event_type = ApplicationEventType.REJECTED.value
-        elif any(w in lower for w in ["offer letter", "pleased to offer", "congratulations on your offer", "compensation package", "offer"]):
-            event_type = ApplicationEventType.OFFER.value
-        elif any(w in lower for w in ["interview", "discussion", "technical screen", "system design", "zoom", "google meet", "round"]):
-            event_type = ApplicationEventType.INTERVIEW_INVITE.value
-        elif any(w in lower for w in ["assessment", "coding challenge", "hackerrank", "codility", "testgorilla", "online test", "oa"]):
-            event_type = ApplicationEventType.OA_RECEIVED.value
-        elif any(w in lower for w in ["application received", "successfully applied", "thank you for applying"]):
-            event_type = ApplicationEventType.APPLICATION_RECEIVED.value
-        else:
-            event_type = ApplicationEventType.STATUS_UPDATE.value
+        # Declarative intent matching using shared INTENT_RULES
+        intent_map = {
+            "REJECTION": ApplicationEventType.REJECTED.value,
+            "OFFER_LETTER": ApplicationEventType.OFFER.value,
+            "INTERVIEW_INVITATION": ApplicationEventType.INTERVIEW_INVITE.value,
+            "ASSESSMENT_INVITATION": ApplicationEventType.OA_RECEIVED.value,
+            "APPLICATION_CONFIRMATION": ApplicationEventType.APPLICATION_RECEIVED.value,
+        }
+        for rule in INTENT_RULES:
+            if rule.matches(lower, lower[:1000], ""):
+                event_type = intent_map.get(rule.category, ApplicationEventType.STATUS_UPDATE.value)
+                break
 
-        # Heuristic deadline / interview date extraction
-        deadline = None
-        date_pattern = re.search(r'\b(?:on|by|at|before)\s+([A-Za-z0-9\s,:]+?(?:[0-9]{4}|[0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?))\b', raw_text, re.IGNORECASE)
-        if date_pattern:
-            deadline = date_pattern.group(1).strip()
+        # Fallback keyword checks for portal/chat message snippets
+        if event_type == ApplicationEventType.STATUS_UPDATE.value:
+            if any(w in lower for w in ["regret", "not moving forward", "another candidate", "unfortunately", "rejected", "rejection"]):
+                event_type = ApplicationEventType.REJECTED.value
+            elif any(w in lower for w in ["offer letter", "pleased to offer", "congratulations on your offer", "compensation package", "offer"]):
+                event_type = ApplicationEventType.OFFER.value
+            elif any(w in lower for w in ["interview", "schedule a call", "schedule an interview", "hiring manager discussion", "technical screen", "system design", "zoom", "google meet", "round 1", "round 2"]):
+                event_type = ApplicationEventType.INTERVIEW_INVITE.value
+            elif any(w in lower for w in ["assessment", "coding challenge", "hackerrank", "codility", "testgorilla", "online test", "oa"]):
+                event_type = ApplicationEventType.OA_RECEIVED.value
+            elif any(w in lower for w in ["application received", "successfully applied", "thank you for applying"]):
+                event_type = ApplicationEventType.APPLICATION_RECEIVED.value
+
+        # Unified deadline / interview date extraction
+        deadline = extract_deadline_from_text(raw_text)
 
         extracted_event = JobEvent(
             event_type=event_type,

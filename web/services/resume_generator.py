@@ -1,3 +1,4 @@
+import os
 import re
 import uuid
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -27,13 +28,15 @@ class ResumeGenerationResult(BaseModel):
 # 1. Pinned Candidate Resume Profiles (Fixed Invariant Sections)
 # ==============================================================================
 
-CANDIDATE_HEADER = """# Subham Yadav
+DEFAULT_CANDIDATE_HEADER = """# Subham Yadav
 **Full-Stack Software Engineer | Distributed Systems & Generative AI Platforms**
 📞 +91 9350087395 | ✉️ sydv3604@gmail.com | 🌐 [LinkedIn](https://linkedin.com/in/subham-yadav-3ch0) | 💻 [GitHub](https://github.com/subham3604) | 📍 Gurugram, India
 
 ---"""
 
-PINNED_EDUCATION_AND_AWARDS = """## EDUCATION
+CANDIDATE_HEADER = os.getenv("CANDIDATE_HEADER", DEFAULT_CANDIDATE_HEADER)
+
+DEFAULT_EDUCATION_AND_AWARDS = """## EDUCATION
 
 ### Indian Institute of Technology Ropar
 *Bachelor of Technology in Mathematics & Computing | 2021 – 2025 | CGPA: 7.27*
@@ -47,6 +50,8 @@ PINNED_EDUCATION_AND_AWARDS = """## EDUCATION
 - Merit-Cum-Means Award at IIT Ropar (Awarded to top 25% of students).
 - JEE Advanced: AIR 6081 (Ranked among top 0.03% of candidates, 2021).
 - NTSE-II Scholar (Qualified NTSE-II, top 2000 among 800K candidates, 2019)."""
+
+PINNED_EDUCATION_AND_AWARDS = os.getenv("PINNED_EDUCATION_AND_AWARDS", DEFAULT_EDUCATION_AND_AWARDS)
 
 
 # ==============================================================================
@@ -77,7 +82,7 @@ def extract_verbatim_entities(text: str) -> Set[str]:
     return entities
 
 
-PINNED_WORK_EXPERIENCE_TEMPLATE = """
+DEFAULT_WORK_EXPERIENCE_TEMPLATE = """
 ### Software Engineer | GlobalLogic (Client: Google)
 *Aug 2025 – Present | Gurugram, India*
 *Technologies Used:* React, Angular, TypeScript, Cypress, Jest, Streaming APIs, REST APIs
@@ -86,6 +91,44 @@ PINNED_WORK_EXPERIENCE_TEMPLATE = """
 *May 2024 – Jul 2024 | Bengaluru, India*
 *Technologies Used:* Python, Flask, NumPy, REST APIs, Adversarial ML, PyTorch
 """
+
+PINNED_WORK_EXPERIENCE_TEMPLATE = os.getenv("PINNED_WORK_EXPERIENCE_TEMPLATE", DEFAULT_WORK_EXPERIENCE_TEMPLATE)
+
+# Standard English vocabulary and prose words commonly appearing in resume text
+COMMON_RESUME_VOCAB = {
+    "a", "about", "above", "across", "action", "activities", "after", "again", "against", "all", "almost",
+    "along", "also", "although", "always", "among", "an", "and", "another", "any", "are", "area", "areas",
+    "around", "as", "at", "back", "be", "became", "because", "become", "been", "before", "being", "between",
+    "both", "built", "but", "by", "can", "client", "clients", "code", "core", "could", "created", "daily",
+    "data", "designed", "developed", "development", "did", "different", "do", "does", "done", "down", "during",
+    "each", "early", "end", "engineering", "engineers", "even", "every", "features", "first", "for", "from",
+    "full", "further", "general", "get", "give", "given", "good", "great", "group", "had", "has", "have",
+    "having", "he", "her", "here", "high", "him", "his", "how", "if", "in", "including", "into", "is", "it",
+    "its", "just", "key", "large", "lead", "leading", "level", "like", "made", "main", "major", "make", "many",
+    "may", "me", "members", "more", "most", "much", "multiple", "must", "my", "new", "next", "no", "not",
+    "now", "of", "off", "on", "once", "one", "only", "or", "other", "our", "out", "over", "own", "part",
+    "per", "performance", "pipeline", "pipelines", "platform", "platforms", "process", "production", "real",
+    "related", "scale", "service", "services", "set", "several", "she", "should", "show", "side", "since",
+    "small", "so", "some", "state", "still", "such", "system", "systems", "team", "teams", "than", "that",
+    "the", "their", "them", "then", "there", "these", "they", "this", "those", "through", "time", "to", "too",
+    "under", "up", "upon", "use", "used", "user", "users", "using", "very", "was", "way", "we", "well", "were",
+    "what", "when", "where", "which", "while", "who", "whom", "will", "with", "within", "without", "work",
+    "worked", "would", "year", "years", "you", "your",
+    # Resume structure words
+    "education", "experience", "experiences", "projects", "technical", "skills", "awards", "achievements",
+    "technologies", "tools", "present", "software", "engineer", "intern", "bachelor", "technology", "coursework",
+    "summary", "responsibilities", "certifications", "header", "month", "months", "jan", "feb", "mar", "apr",
+    "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec", "january", "february", "march", "april", "june",
+    "july", "august", "september", "october", "november", "december",
+    "architected", "microservices", "serverless", "distributed", "frontend", "backend", "fullstack",
+    # Common action verbs and descriptors
+    "implemented", "maintained", "optimized", "spearheaded", "collaborated", "robust", "scalable",
+    "automated", "streamlined", "integrated", "managed", "deployed", "monitored", "enhanced",
+    "accelerated", "leveraged", "coordinated", "formulated", "engineered", "orchestrated",
+    "refactored", "delivered", "tested", "debugged", "resolved", "executed", "facilitated",
+    "contributed", "analyzed", "evaluated", "authenticated", "authorized", "benchmarked",
+    "configured", "secured", "validated", "improved", "reduced", "increased", "achieved",
+}
 
 
 def verify_resume_grounding(
@@ -113,14 +156,10 @@ def verify_resume_grounding(
 
     # Standard Markdown structural / common resume English tokens
     structural_tokens = {
-        "work", "experiences", "projects", "technical", "skills", "education",
-        "awards", "achievements", "technologies", "tools", "used", "present",
-        "aug", "jul", "may", "software", "engineer", "intern", "client",
-        "subham", "yadav", "gurugram", "india", "bengaluru", "linkedin", "github",
-        "platform", "looker", "google", "accenture", "globallogic", "delhi", "metro",
-        "delhi metro", "ropar", "punjab", "bachelor", "technology", "mathematics",
-        "computing", "coursework", "grade", "scholar", "platforms", "students",
-        "decided", "candidate", "layout", "similarity", "candidate", "network"
+        "work", "experiences", "experience", "projects", "technical", "skills",
+        "education", "awards", "achievements", "technologies", "tools", "used",
+        "present", "client", "summary", "profile", "contact", "responsibilities",
+        "coursework", "certifications", "layout", "similarity", "candidate"
     }
     source_entities.update(structural_tokens)
 
@@ -133,8 +172,8 @@ def verify_resume_grounding(
             # Check numerical tampering specifically
             if re.search(r"\d", entity):
                 hallucinations.append(entity)
-            # Check if clearly a foreign technology not present
-            elif any(foreign in entity for foreign in ["aws", "azure", "gcp", "golang", "graphql", "rust", "solidity", "spark", "hadoop"]):
+            # Check ungrounded foreign tools, libraries, or claims not present in source vault or common vocab
+            elif entity not in COMMON_RESUME_VOCAB and len(entity) > 2:
                 hallucinations.append(entity)
 
     return sorted(list(set(hallucinations)))
@@ -203,36 +242,34 @@ def generate_tailored_resume(
         # 4. Assemble the Markdown document
         sections: List[str] = [CANDIDATE_HEADER, "\n## WORK EXPERIENCES\n"]
 
-        # Section 2.1: GlobalLogic (Client: Google)
-        sections.append("### Software Engineer | GlobalLogic (Client: Google)")
-        sections.append("*Aug 2025 – Present | Gurugram, India*\n")
+        # Dynamically render work experiences grouped by employer / role
+        org_work: Dict[str, Dict[str, List[str]]] = {}
+        org_tech: Dict[str, Set[str]] = {}
+        for r in work_rows:
+            if " - " in r.title:
+                org, sub = r.title.split(" - ", 1)
+            else:
+                org, sub = r.title, ""
+            org_work.setdefault(org, {}).setdefault(sub, []).append(r.bullet_point)
+            if r.tech_tags:
+                org_tech.setdefault(org, set()).update(r.tech_tags)
 
-        # Enterprise Conversational AI
-        conv_bullets = work_by_title.get("GlobalLogic (Client: Google) - Enterprise Conversational AI Platform", [])
-        if conv_bullets:
-            sections.append("#### Enterprise Conversational AI Platform")
-            for b in conv_bullets:
-                sections.append(f"- {b}")
+        if org_work:
+            for org, sub_units in org_work.items():
+                sections.append(f"### {org}")
+                for sub, bullets in sub_units.items():
+                    if sub:
+                        sections.append(f"#### {sub}")
+                    for b in bullets:
+                        sections.append(f"- {b}")
+                    sections.append("")
+                if org in org_tech and org_tech[org]:
+                    tech_str = ", ".join(sorted(list(org_tech[org]))[:8])
+                    sections.append(f"*Technologies Used:* {tech_str}\n")
+        else:
+            # Fallback to configured template if vault has no work experience records
+            sections.append(PINNED_WORK_EXPERIENCE_TEMPLATE.strip())
             sections.append("")
-
-        # Google Looker
-        looker_bullets = work_by_title.get("GlobalLogic (Client: Google) - Google Looker", [])
-        if looker_bullets:
-            sections.append("#### Google Looker")
-            for b in looker_bullets:
-                sections.append(f"- {b}")
-            sections.append("")
-
-        sections.append("*Technologies Used:* React, Angular, TypeScript, Cypress, Jest, Streaming APIs, REST APIs\n")
-
-        # Section 2.2: Accenture
-        sections.append("### Software Engineer Intern | Accenture")
-        sections.append("*May 2024 – Jul 2024 | Bengaluru, India*\n")
-        sections.append("#### Defensive AI Evaluation API")
-        accenture_bullets = work_by_title.get("Accenture - Defensive AI Evaluation API", [])
-        for b in accenture_bullets:
-            sections.append(f"- {b}")
-        sections.append("*Technologies Used:* Python, Flask, NumPy, REST APIs, Adversarial ML, PyTorch\n")
 
         sections.append("---\n")
 
@@ -311,12 +348,16 @@ def save_resume_snapshot(
             is_active=True,
         )
         db.add(snapshot)
-        db.commit()
-        db.refresh(snapshot)
+        if managed_session:
+            db.commit()
+            db.refresh(snapshot)
+        else:
+            db.flush()
         return snapshot
 
     except Exception:
-        db.rollback()
+        if managed_session:
+            db.rollback()
         raise
     finally:
         if managed_session:

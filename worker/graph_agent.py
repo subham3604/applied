@@ -68,6 +68,76 @@ def _parse_deadline_datetime(raw_val: Optional[str], default_tz=timezone.utc) ->
         return None
 
 
+def extract_deadline_from_text(text: str, reference_time: Optional[datetime] = None) -> Optional[str]:
+    """
+    Extracts explicit relative or absolute assessment/interview deadlines from text.
+    Returns normalized ISO 8601 string or parsed date string.
+    """
+    ref_time = reference_time or datetime.now(timezone.utc)
+    rel_hrs = re.search(
+        r'\b(?:within|valid for|expires in|complete in|complete within|take within)\s+(\d+)\s*(?:hours?|hrs?)\b',
+        text,
+        re.IGNORECASE,
+    )
+    if rel_hrs:
+        hrs = int(rel_hrs.group(1))
+        return (ref_time + timedelta(hours=hrs)).isoformat()
+
+    rel_days = re.search(r'\b(?:within|in|valid for)\s+(\d+)\s*days?\b', text, re.IGNORECASE)
+    if rel_days:
+        days = int(rel_days.group(1))
+        return (ref_time + timedelta(days=days)).isoformat()
+
+    date_pattern = re.search(
+        r'\b(?:due by|due on|due date:?|deadline:?|expires on|expires:?|until|before|by|on|at)\s+'
+        r'([A-Za-z0-9\s,:]+?(?:[0-9]{4}|[0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?))\b',
+        text,
+        re.IGNORECASE,
+    )
+    if date_pattern:
+        date_str = date_pattern.group(1).strip()
+        parsed_dt = _parse_deadline_datetime(date_str)
+        return parsed_dt.isoformat() if parsed_dt else date_str
+
+    return None
+
+
+ATS_DOMAINS = (
+    "lever.co", "greenhouse.io", "ashbyhq.com", "smartrecruiters.com",
+    "breezy.hr", "jobvite.com", "workable.com"
+)
+ATS_AND_WEBMAIL = {
+    "gmail", "yahoo", "outlook", "hotmail", "icloud", "mail",
+    "greenhouse", "lever", "workday", "myworkday", "smartrecruiters",
+    "ashbyhq", "breezy", "jobvite", "workable", "hire",
+    "hackerrank", "hackerrankforwork", "hackerearth", "codility", "mettl", "codesignal",
+}
+GENERIC_SENDER_TITLES = re.compile(
+    r'\s*(?:(?:University|Campus)\s+)?(?:Recruiting|Talent Acquisition|Talent Team|Workday Notifications|Workday|Careers|Team|HR|Jobs|Hiring Team|No-Reply|Notifications|Assessments|Competitions)\b.*',
+    re.IGNORECASE,
+)
+TESTING_PLATFORMS = {
+    "hackerrank", "codility", "mettl", "codesignal", "hackerearth", "testgorilla", "mercer mettl"
+}
+RE_DOMAIN_SUFFIX = re.compile(
+    r'(?:software|solutions|services|technologies|tech|group|global|holdings)$',
+    re.IGNORECASE,
+)
+RE_WORKDAY_PREFIX_SUFFIX = re.compile(r'(?:inc|corp|careers|jobs)$', re.IGNORECASE)
+
+
+def _clean_display_name(disp_name: str) -> Optional[str]:
+    """Cleans recruiter/generic titles from display name."""
+    if not disp_name:
+        return None
+    cleaned = GENERIC_SENDER_TITLES.sub('', disp_name).strip()
+    if cleaned and cleaned.lower() not in (
+        "no-reply", "notifications", "recruiting", "support", "careers", "talent acquisition"
+    ):
+        return cleaned
+    return None
+
+
 # ==============================================================================
 # Helper to Update Execution Trail & Database Sessions
 # ==============================================================================
@@ -96,6 +166,12 @@ def _get_db_session(state: AgentState):
     try:
         from db.session import SessionLocal
         session = SessionLocal()
+    except Exception as exc:
+        logger.warning("Database session creation error in graph agent node: %s", exc)
+        yield None
+        return
+
+    try:
         yield session
         session.commit()
     except Exception as exc:
@@ -104,8 +180,8 @@ def _get_db_session(state: AgentState):
                 session.rollback()
             except Exception:
                 pass
-        logger.warning("Database session error in graph agent node: %s", exc)
-        yield None
+        logger.warning("Database transaction error in graph agent node: %s", exc)
+        raise
     finally:
         if session:
             session.close()
@@ -252,7 +328,7 @@ def node_extract_event(state: AgentState) -> Dict[str, Any]:
     # Reconcile OA completion receipt (submission finished, not pending OA)
     if any(sig in combined for sig in ["completed your", "submission received", "tasks submitted"]):
         if event_type == ApplicationEventType.OA_RECEIVED:
-            event_type = ApplicationEventType.APPLICATION_RECEIVED
+            event_type = ApplicationEventType.STATUS_UPDATE
 
     # 1. Extract Company Name (Generalized across ATS providers, headers, and prepositions)
     sender = state.get("sender", "")
@@ -268,70 +344,82 @@ def node_extract_event(state: AgentState) -> Dict[str, Any]:
             "execution_path": path,
         }
 
-    # Fallback to Generalized Deterministic Parsing (when LLM is offline or unconfigured)
-    sender = state.get("sender", "")
-    disp_name, addr = parseaddr(sender)
-    disp_name = disp_name.strip('"\' ')
-    addr_lower = addr.lower()
-
-    company = EntityAliasCache.get(addr) or EntityAliasCache.get(disp_name)
+    company = EntityAliasCache.get(addr) or (EntityAliasCache.get(addr.split("@")[-1]) if "@" in addr else None) or EntityAliasCache.get(disp_name)
 
     # A. ATS Display Name (e.g. "Gushwork <no-reply@hire.lever.co>")
-    ats_domains = ("lever.co", "greenhouse.io", "ashbyhq.com", "smartrecruiters.com", "breezy.hr", "jobvite.com", "workable.com")
-    is_ats = any(dom in addr_lower for dom in ats_domains)
+    is_ats = any(dom in addr_lower for dom in ATS_DOMAINS)
     if not company and is_ats and disp_name:
-        clean_disp = re.sub(r'\s*(?:Recruiting|Talent Acquisition|Talent Team|Careers|Team|HR|Jobs|Hiring Team|No-Reply)\b.*', '', disp_name, flags=re.IGNORECASE).strip()
-        if clean_disp and clean_disp.lower() not in ("no-reply", "notifications", "recruiting", "support"):
-            company = clean_disp
+        company = _clean_display_name(disp_name)
 
     # B. Workday Email Structure: <tenant>@myworkday.com -> extract tenant dynamically
     if not company and "@myworkday.com" in addr_lower:
         prefix = addr_lower.split("@")[0].split("<")[-1].strip()
         cached = EntityAliasCache.get(prefix)
+        cleaned_disp = _clean_display_name(disp_name) if disp_name else None
         if cached:
             company = cached
-        elif disp_name and not any(bad in disp_name.lower() for bad in ("workday", "recruiting", "talent", "do-not-reply", "support")):
-            company = disp_name
+        elif cleaned_disp and not any(bad in cleaned_disp.lower() for bad in ("workday", "recruiting", "talent", "do-not-reply", "support")):
+            company = cleaned_disp
         else:
-            clean_p = re.sub(r'(?:inc|corp|careers|jobs)$', '', prefix).strip()
+            clean_p = RE_WORKDAY_PREFIX_SUFFIX.sub('', prefix).strip()
             company = clean_p.title() if clean_p else None
 
-    # C. Display Name Fallback: If sender display name is not generic
-    if not company and disp_name:
-        clean_disp = re.sub(r'\s*(?:Recruiting|Talent Acquisition|Talent Team|Careers|Team|HR|Jobs|Hiring Team|No-Reply)\b.*', '', disp_name, flags=re.IGNORECASE).strip()
-        if clean_disp and clean_disp.lower() not in ("no-reply", "notifications", "recruiting", "support", "careers", "talent acquisition"):
-            company = clean_disp
+    # C. Display Name Fallback: If sender display name is not generic or a third-party testing platform
+    disp_is_testing_platform = any(p in disp_name.lower() for p in TESTING_PLATFORMS) if disp_name else False
+    if not company and disp_name and not disp_is_testing_platform:
+        cleaned_disp = _clean_display_name(disp_name)
+        if cleaned_disp and not any(p in cleaned_disp.lower() for p in TESTING_PLATFORMS):
+            company = EntityAliasCache.get(cleaned_disp) or cleaned_disp
 
-    # D. Subject Line Preposition Patterns
+    # D. Subject Line Preposition, Direct Invitation, & Tagged Patterns
     if not company:
         subj_clean = re.sub(r'^(?:Fwd?:|Re:)\s*', '', subject, flags=re.IGNORECASE).strip()
-        patterns = [
-            r'(?:applying to|applied to|application to|welcome to|offer from|interview with|invite from|interest in|career opportunity at|opportunity at|position at|role at|\bat)\s+([A-Za-z0-9\s&]+?)(?:\s*(?:Pvt|Private|Ltd|Limited|for|on|\.|\-|$))',
-            r'(?:Thank You for Applying to|Thanks for applying to|Thank you for your interest in)\s+([A-Za-z0-9\s&]+?)(?:\s*(?:Pvt|Private|Ltd|Limited|for|on|\.|\-|$))',
-            r'([A-Za-z0-9\s&]+?)\s+(?:Application Received|Job Application|Interview|Careers)',
-        ]
-        for pat in patterns:
-            m = re.search(pat, subj_clean, re.IGNORECASE)
-            if m and len(m.group(1).strip()) > 1:
-                cand = m.group(1).strip()
-                if not any(bad in cand.lower() for bad in ("interview", "assessment", "application", "invitation", "opportunity", "update", "next steps", "submission", "candidate")):
-                    company = cand
-                    break
+
+        # Priority bracket/colon patterns: e.g. "[Goldman Sachs] ...", "Uber: ..."
+        bracket_match = re.match(r'^\[([A-Za-z0-9\s&]+)\]', subj_clean)
+        colon_match = re.match(r'^([A-Za-z0-9\s&]+?):\s+', subj_clean)
+        if bracket_match and not any(bad in bracket_match.group(1).lower() for bad in ("interview", "assessment", "test", "update", "invitation")):
+            company = EntityAliasCache.get(bracket_match.group(1).strip()) or bracket_match.group(1).strip()
+        elif colon_match and not any(bad in colon_match.group(1).lower() for bad in ("invitation", "re", "fwd", "update", "test", "interview", "assessment")):
+            company = EntityAliasCache.get(colon_match.group(1).strip()) or colon_match.group(1).strip()
+
+        if not company:
+            patterns = [
+                r'(?:You are invited to|Invitation to take|Invitation:)\s+([A-Za-z0-9\s&]+?)(?::|\s+SWE|\s+SDE|\s+Online|\s+Coding|\s+Assessment|\s+Test)',
+                r'^([A-Za-z0-9\s&]+?)\s+has invited you to',
+                r'^([A-Za-z0-9\s&]+?)\s+(?:Specialist|Global Tech|Coding Assessment|Online Test|Test Invitation)',
+                r'(?:completed your|completed the)\s+([A-Za-z0-9\s&]+?)\s+Coding Assessment',
+                r'(?:applying to|applied to|application to|welcome to|offer from|interview with|invite from|interest in|career opportunity at|opportunity at|position at|role at|\bat)\s+([A-Za-z0-9\s&]+?)(?:\s*(?:Pvt|Private|Ltd|Limited|for|on|\.|\-|$))',
+                r'(?:Thank You for Applying to|Thanks for applying to|Thank you for your interest in)\s+([A-Za-z0-9\s&]+?)(?:\s*(?:Pvt|Private|Ltd|Limited|for|on|\.|\-|$))',
+                r'([A-Za-z0-9\s&]+?)\s+(?:Application Received|Job Application|Interview|Careers)',
+            ]
+            for pat in patterns:
+                m = re.search(pat, subj_clean, re.IGNORECASE)
+                if m and len(m.group(1).strip()) > 1:
+                    cand = m.group(1).strip()
+                    if not any(bad in cand.lower() for bad in ("interview", "assessment", "application", "invitation", "opportunity", "update", "next steps", "submission", "candidate")):
+                        company = EntityAliasCache.get(cand) or cand
+                        break
+
+    # Check parenthetical brand name (e.g. "Bundl Technologies (Swiggy)")
+    # If company already extracted, only override if parenthetical is a known canonical alias
+    paren_match = re.search(r'\(([A-Za-z0-9\s&]+)\)', subject)
+    if paren_match:
+        paren_cand = paren_match.group(1).strip()
+        alias = EntityAliasCache.get(paren_cand)
+        if alias:
+            company = alias
+        elif not company and not any(bad in paren_cand.lower() for bad in ("interview", "assessment", "test", "oa", "round", "backend", "frontend", "fullstack", "data", "engineer", "intern")):
+            company = paren_cand
 
     # E. Sender Domain (Excluding public webmail, ATS platforms, testing platforms)
     if not company and "@" in addr:
         domain_match = re.search(r'@(?:careers\.|jobs\.|talent\.|recruiting\.|hr\.)?([A-Za-z0-9\-]+)\.', addr)
         if domain_match:
             dom = domain_match.group(1).lower()
-            ats_and_webmail = {
-                "gmail", "yahoo", "outlook", "hotmail", "icloud", "mail",
-                "greenhouse", "lever", "workday", "myworkday", "smartrecruiters",
-                "ashbyhq", "breezy", "jobvite", "workable", "hire",
-                "hackerrank", "hackerrankforwork", "hackerearth", "codility", "mettl", "codesignal",
-            }
-            if dom not in ats_and_webmail:
-                clean_dom = re.sub(r'(?:software|solutions|services|technologies|tech|group|global|holdings)$', '', dom).strip()
-                company = (clean_dom or dom).capitalize()
+            if dom not in ATS_AND_WEBMAIL and dom not in TESTING_PLATFORMS:
+                clean_dom = RE_DOMAIN_SUFFIX.sub('', dom).strip()
+                company = EntityAliasCache.get(dom) or (clean_dom or dom).capitalize()
 
     if not company:
         company = "Unknown Company"
@@ -340,26 +428,7 @@ def node_extract_event(state: AgentState) -> Dict[str, Any]:
     deadline = None
     if event_type in (ApplicationEventType.OA_RECEIVED, ApplicationEventType.INTERVIEW_INVITE):
         email_time = state.get("email_received_at") or datetime.now(timezone.utc)
-        rel_hrs = re.search(r'\b(?:within|valid for|expires in|complete in|complete within|take within)\s+(\d+)\s*(?:hours?|hrs?)\b', combined, re.IGNORECASE)
-        if rel_hrs:
-            hrs = int(rel_hrs.group(1))
-            deadline = (email_time + timedelta(hours=hrs)).isoformat()
-        else:
-            rel_days = re.search(r'\b(?:within|in|valid for)\s+(\d+)\s*days?\b', combined, re.IGNORECASE)
-            if rel_days:
-                days = int(rel_days.group(1))
-                deadline = (email_time + timedelta(days=days)).isoformat()
-            else:
-                date_pattern = re.search(
-                    r'\b(?:due by|due on|due date:?|deadline:?|expires on|expires:?|until|before|by|on|at)\s+'
-                    r'([A-Za-z0-9\s,:]+?(?:[0-9]{4}|[0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?))\b',
-                    combined,
-                    re.IGNORECASE,
-                )
-                if date_pattern:
-                    date_str = date_pattern.group(1).strip()
-                    parsed_dt = _parse_deadline_datetime(date_str)
-                    deadline = parsed_dt.isoformat() if parsed_dt else date_str
+        deadline = extract_deadline_from_text(combined, email_time)
 
     # 2. Extract Role Title (Generalized)
     role_title = None
@@ -396,7 +465,9 @@ def node_extract_event(state: AgentState) -> Dict[str, Any]:
             if m and len(m.group(1).strip()) > 2:
                 cand_role = m.group(1).strip()
                 cand_role = re.split(r'\s+(?:Our|We|Thank|Please|A member|You|If)\b', cand_role)[0].strip()
-                if not any(b in cand_role.lower() for b in ("dear", "candidate", "subham", "application", "hiring")):
+                # Strip leading salutation patterns (e.g. "Dear John,", "Hi Candidate,")
+                cand_role = re.sub(r'^(?:Dear|Hi|Hello|Hey|Greetings)\s+[A-Za-z\s]+[,\-\:]\s*', '', cand_role, flags=re.IGNORECASE).strip()
+                if cand_role and not any(b in cand_role.lower() for b in ("dear", "candidate", "applicant", "application", "hiring", "invitation", "submission")):
                     role_title = cand_role
                     break
 
@@ -597,15 +668,16 @@ def node_create_new_record(state: AgentState) -> Dict[str, Any]:
                     # Auto-generate grounded tailored resume snapshot from vault
                     try:
                         from web.services.resume_generator import generate_tailored_resume, save_resume_snapshot
-                        jd_context = f"Role: {role_title} at {company_raw}.\n{raw_text or ''}".strip()
+                        jd_context = f"Role: {role_title} at {company_raw}."
                         resume_res = generate_tailored_resume(jd_text=jd_context, db=session)
-                        save_resume_snapshot(
-                            application_id=new_app.id,
-                            markdown_content=resume_res.markdown_content,
-                            vault_ids=resume_res.retrieved_vault_ids,
-                            is_user_edited=False,
-                            db=session,
-                        )
+                        with session.begin_nested():
+                            save_resume_snapshot(
+                                application_id=new_app.id,
+                                markdown_content=resume_res.markdown_content,
+                                vault_ids=resume_res.retrieved_vault_ids,
+                                is_user_edited=False,
+                                db=session,
+                            )
                         logger.info("Auto-generated tailored resume snapshot for new application: %s (%s)", company_raw, role_title)
                     except Exception as resume_err:
                         logger.warning("Could not auto-generate resume snapshot for %s: %s", app_uuid, resume_err)

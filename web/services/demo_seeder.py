@@ -21,10 +21,7 @@ def seed_demo_attention_data(db: Session) -> Dict[str, Any]:
     """
     existing = (
         db.query(InboundTriageItem)
-        .filter(
-            (InboundTriageItem.source == "DEMO")
-            | (InboundTriageItem.sender.in_(["recruiting@bundltechnologies.com", "talent-team@stripe.com"]))
-        )
+        .filter(InboundTriageItem.source == "DEMO")
         .count()
     )
     if existing > 0:
@@ -84,10 +81,7 @@ def clear_demo_attention_data(db: Session) -> Dict[str, Any]:
     """
     items = (
         db.query(InboundTriageItem)
-        .filter(
-            (InboundTriageItem.source == "DEMO")
-            | (InboundTriageItem.sender.in_(["recruiting@bundltechnologies.com", "talent-team@stripe.com"]))
-        )
+        .filter(InboundTriageItem.source == "DEMO")
         .all()
     )
     count = len(items)

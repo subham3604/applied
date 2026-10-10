@@ -82,6 +82,25 @@ class LLMArbitrationDecision(BaseModel):
 # Level 1: Company Normalization & Fuzzy String Matching
 # ==============================================================================
 
+# Suffixes and legal entities to strip (sorted descending by length)
+COMPANY_SUFFIXES = [
+    "private limited", "pvt ltd", "pvt", "ltd",
+    "technologies", "technology", "tech", "solutions", "services",
+    "corporation", "corp", "incorporated", "inc", "enterprises",
+    "communications", "communication",
+    "holdings", "holding", "group", "media", "software", "systems",
+    "india", "global", "international", "labs", "lab"
+]
+COMPANY_SUFFIXES.sort(key=len, reverse=True)
+RE_COMPANY_SUFFIXES = re.compile(
+    r"\b(?:" + "|".join(re.escape(s) for s in COMPANY_SUFFIXES) + r")\b",
+    re.IGNORECASE
+)
+RE_PARENTHETICALS = re.compile(r"\(.*?\)")
+RE_PUNCTUATION_SPACE = re.compile(r"[,\.\-_/\\|]+")
+RE_MULTI_SPACE = re.compile(r"\s+")
+
+
 def normalize_company_name(name: str) -> str:
     """
     Normalizes corporate and brand names by stripping legal entity qualifiers,
@@ -96,30 +115,11 @@ def normalize_company_name(name: str) -> str:
         return ""
 
     normalized = name.lower().strip()
-
-    # Remove content in parentheses e.g. "Google (Alphabet)" -> "Google"
-    normalized = re.sub(r"\(.*?\)", "", normalized).strip()
-
-    # Normalize punctuation and symbols to whitespace
-    normalized = re.sub(r"[,\.\-_/\\|]+", " ", normalized)
-    normalized = re.sub(r"\s+", " ", normalized).strip()
-
-    # Suffixes and legal entities to strip (sorted descending by length)
-    suffixes = [
-        "private limited", "pvt ltd", "pvt", "ltd",
-        "technologies", "technology", "tech", "solutions", "services",
-        "corporation", "corp", "incorporated", "inc", "enterprises",
-        "communications", "communication",
-        "holdings", "holding", "group", "media", "software", "systems",
-        "india", "global", "international", "labs", "lab"
-    ]
-    suffixes.sort(key=len, reverse=True)
-
-    for suffix in suffixes:
-        pattern = rf"\b{re.escape(suffix)}\b"
-        normalized = re.sub(pattern, "", normalized).strip()
-
-    normalized = re.sub(r"\s+", " ", normalized).strip()
+    normalized = RE_PARENTHETICALS.sub("", normalized).strip()
+    normalized = RE_PUNCTUATION_SPACE.sub(" ", normalized)
+    normalized = RE_MULTI_SPACE.sub(" ", normalized).strip()
+    normalized = RE_COMPANY_SUFFIXES.sub("", normalized)
+    normalized = RE_MULTI_SPACE.sub(" ", normalized).strip()
     return normalized or name.lower().strip()
 
 
@@ -225,7 +225,12 @@ class EntityAliasCache:
     or legal entities to their canonical company names.
     Backed by in-memory storage and persisted to PostgreSQL WorkerConfig ('entity_aliases').
     """
-    _cache: dict = {}
+    _cache: dict = {
+        "bundl": "Swiggy",
+        "bundl technologies": "Swiggy",
+        "bundltechnologies.com": "Swiggy",
+        "modmed": "Modernizing Medicine",
+    }
     _loaded: bool = False
 
     @classmethod
@@ -281,12 +286,10 @@ class EntityAliasCache:
 
 def lookup_company_web(domain_or_name: str, max_results: int = 3) -> str:
     """
-    Constrained web search for unknown or cryptic company / sender domains.
-    Constraints:
-    - Max 3 results
-    - Max 150 chars per snippet
-    - Excludes noisy job boards (linkedin.com, indeed.com, glassdoor.com, naukri.com)
-    - Returns structured markdown string or empty string on failure
+    Constrained company parent/brand search.
+    In production environments, unauthenticated HTML scraping of search engines is disabled by default
+    to prevent cloud datacenter IP blocks (HTTP 403 / CAPTCHAs).
+    Supports Tavily and SerpAPI when configured, or graceful fallback to LLM internal knowledge.
     """
     if not domain_or_name or not domain_or_name.strip():
         return ""
@@ -295,29 +298,57 @@ def lookup_company_web(domain_or_name: str, max_results: int = 3) -> str:
     if "@" in clean_term:
         clean_term = clean_term.split("@")[-1].strip()
 
+    enable_web = os.getenv("ENABLE_WEB_COMPANY_LOOKUP", "false").lower() in ("true", "1")
+    tavily_key = os.getenv("TAVILY_API_KEY", "").strip()
+    serpapi_key = os.getenv("SERPAPI_API_KEY", "").strip()
+
+    # If web lookup is not explicitly enabled and no official search API key is provided, skip scraping safely
+    if not enable_web and not tavily_key and not serpapi_key:
+        logger.debug("External search scraping disabled in production. Relying on LLM arbitration knowledge for: %s", clean_term)
+        return ""
+
     query = f'"{clean_term}" company operating brand parent organization'
-    blocked_domains = ("linkedin.com", "indeed.com", "glassdoor.com", "naukri.com", "ziprecruiter.com")
     results = []
 
-    # 1. Try googlesearch-python if installed
-    try:
-        from googlesearch import search
-        for res in search(query, num_results=10, advanced=True):
-            url = getattr(res, "url", "")
-            title = getattr(res, "title", "")
-            desc = getattr(res, "description", "")
-            if any(b in url.lower() for b in blocked_domains):
-                continue
-            snippet = (desc or title or "").strip()[:150]
-            if snippet:
-                results.append(f"{len(results)+1}. [{title}]: {snippet}")
-            if len(results) >= max_results:
-                break
-    except Exception as exc:
-        logger.debug("googlesearch lookup failed: %s", exc)
+    # 1. Official Tavily API if configured
+    if tavily_key:
+        try:
+            import json
+            import urllib.request
+            req_data = json.dumps({"query": query, "max_results": max_results, "search_depth": "basic"}).encode("utf-8")
+            req = urllib.request.Request(
+                "https://api.tavily.com/search",
+                data=req_data,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {tavily_key}"}
+            )
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                for r in data.get("results", [])[:max_results]:
+                    snippet = r.get("content", "").strip()[:150]
+                    if snippet:
+                        results.append(f"{len(results)+1}. {snippet}")
+        except Exception as tavily_err:
+            logger.debug("Tavily search API lookup failed: %s", tavily_err)
 
-    # 2. Fallback to DuckDuckGo Lite if needed
-    if not results:
+    # 2. Official SerpAPI if configured
+    if not results and serpapi_key:
+        try:
+            import json
+            import urllib.parse
+            import urllib.request
+            params = urllib.parse.urlencode({"q": query, "api_key": serpapi_key, "num": max_results})
+            req = urllib.request.Request(f"https://serpapi.com/search.json?{params}")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                for r in data.get("organic_results", [])[:max_results]:
+                    snippet = r.get("snippet", "").strip()[:150]
+                    if snippet:
+                        results.append(f"{len(results)+1}. {snippet}")
+        except Exception as serp_err:
+            logger.debug("SerpAPI lookup failed: %s", serp_err)
+
+    # 3. Optional local development fallback with strict timeout
+    if not results and enable_web:
         try:
             import urllib.parse
             import urllib.request
@@ -326,15 +357,15 @@ def lookup_company_web(domain_or_name: str, max_results: int = 3) -> str:
             }
             q_enc = urllib.parse.quote(query)
             req = urllib.request.Request(f"https://lite.duckduckgo.com/lite/?q={q_enc}", headers=headers)
-            with urllib.request.urlopen(req, timeout=4) as resp:
+            with urllib.request.urlopen(req, timeout=2) as resp:
                 html = resp.read().decode("utf-8", errors="ignore")
                 tds = re.findall(r'<td class=[\'"]result-snippet[\'"]>(.*?)</td>', html, re.DOTALL)
                 for t in tds[:max_results]:
                     clean = re.sub(r'<.*?>', '', t).strip()[:150]
                     if clean:
                         results.append(f"{len(results)+1}. {clean}")
-        except Exception as ddg_exc:
-            logger.debug("DuckDuckGo lookup failed: %s", ddg_exc)
+        except Exception as exc:
+            logger.debug("Web lookup fallback skipped or timed out: %s", exc)
 
     if not results:
         return ""

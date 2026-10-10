@@ -19,6 +19,7 @@ import os
 import signal
 import sys
 from typing import Any, Callable, Dict, Optional
+import uuid
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -85,13 +86,15 @@ def run_poll_cycle(
 
         logger.info("Discovered %d candidate email(s) for LangGraph processing.", len(emails))
 
+        # Sort emails chronologically (oldest first) to ensure deterministic event state transitions
+        emails.sort(key=lambda e: e.received_at)
+
         compiled_graph = graph or build_email_agent_graph()
-        max_received_at = last_checked_at
+        last_safe_watermark = last_checked_at
+        had_processing_error = False
 
         for email in emails:
             summary["processed"] += 1
-            if email.received_at > max_received_at:
-                max_received_at = email.received_at
 
             logger.info(
                 "Processing message [%d/%d]: '%s' from %s",
@@ -131,22 +134,54 @@ def run_poll_cycle(
                     summary["relevant"] += 1
                 if result.get("committed"):
                     summary["committed"] += 1
+                    session.commit()
                     logger.info("Successfully committed pipeline event for '%s'", email.subject)
                 elif "dead_letter_log" in result.get("execution_path", []):
                     summary["dead_letter"] += 1
+                    session.commit()
                     logger.info(
                         "Email '%s' routed to dead_letter_log: %s",
                         email.subject, result.get("dead_letter_reason")
                     )
+                else:
+                    session.commit()
+
+                # Advance watermark for cleanly completed email
+                if email.received_at > last_safe_watermark:
+                    last_safe_watermark = email.received_at
 
             except Exception as proc_err:
+                session.rollback()
                 logger.error(
                     "Unhandled exception processing email '%s': %s",
                     email.subject, proc_err, exc_info=True
                 )
+                summary["dead_letter"] += 1
+                # Quarantine poisoned email into InboundTriageItem queue for human review
+                try:
+                    from db.models import InboundTriageItem
+                    triage_item = InboundTriageItem(
+                        id=uuid.uuid4(),
+                        sender=email.sender,
+                        subject=email.subject,
+                        raw_body=email.body_text[:4000] if email.body_text else "",
+                        status="PENDING",
+                        source="GMAIL_WORKER_ERROR",
+                        candidate_application_ids=[],
+                        resolution_confidence="LOW",
+                        resolution_note=f"Unhandled worker processing error: {str(proc_err)[:300]}",
+                    )
+                    session.add(triage_item)
+                    session.commit()
+                    # Quarantined safely; advance watermark past this poisoned email
+                    if email.received_at > last_safe_watermark:
+                        last_safe_watermark = email.received_at
+                except Exception as dl_err:
+                    session.rollback()
+                    logger.warning("Could not persist dead-letter triage item: %s", dl_err)
 
         # Update last_checked_at timestamp boundary
-        update_boundary = max(max_received_at, cycle_start)
+        update_boundary = max(last_safe_watermark, cycle_start)
         try:
             update_worker_last_checked_at(session, update_boundary)
             summary["last_checked_at"] = update_boundary
